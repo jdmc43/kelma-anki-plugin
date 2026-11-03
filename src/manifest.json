@@ -1,0 +1,9 @@
+{
+  "package": "kelma",
+  "name": "Kelma",
+  "mod": 0,
+  "conflicts": [],
+  "min_point_version": 231000,
+  "max_point_version": 0,
+  "homepage": "https://kelma.app"
+}

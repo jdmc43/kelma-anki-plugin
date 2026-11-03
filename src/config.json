@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "kelmasync_url": "https://sync.kelma.tech/",
+  "kelmasync_hkey": "",
+  "kelmasync_user": "",
+  "kelmasync_path": "auto",
+  "ankiweb_hkey": "",
+  "ankiweb_user": "",
+  "sync_media": true,
+  "wrap_sync_button": true,
+  "block_native_sync": true,
+  "backup_before_sync": true,
+  "check_for_updates": true,
+  "v2_url": "https://sync2.kelma.tech",
+  "v2_routing_initialized": false,
+  "v2_unrouted_decks_local": false,
+  "deck_routing": {},
+  "features": {}
+}

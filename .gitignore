@@ -1,0 +1,5 @@
+dist/
+dev/.venv/
+__pycache__/
+*.pyc
+src/meta.json
