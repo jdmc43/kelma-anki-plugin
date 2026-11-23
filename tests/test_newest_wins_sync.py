@@ -703,6 +703,7 @@ class NewestWinsSyncTest(unittest.TestCase):
         apply_card.assert_called_once_with(
             ANY, {"card_id": 2}, apply_scheduling=True, apply_study_state=True,
             apply_schedule_reset=False, apply_due_date_override=False,
+            day_mapper=None,
         )
 
     def test_interrupted_note_pull_restores_pristine_generated_card(self) -> None:
@@ -741,6 +742,7 @@ class NewestWinsSyncTest(unittest.TestCase):
         apply_card.assert_called_once_with(
             ANY, {"card_id": 2}, apply_scheduling=True, apply_study_state=True,
             apply_schedule_reset=False, apply_due_date_override=False,
+            day_mapper=None,
         )
 
 

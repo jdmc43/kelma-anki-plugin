@@ -291,19 +291,45 @@ def card_manifest(col: Collection, deck_names: list[str] | None = None) -> list[
     return out
 
 
-def _normalized_deck_config(deck: dict[str, Any]) -> dict[str, Any]:
-    cfg = dict(deck)
-    # Name is the identity; id/mod/usn are local bookkeeping and should not
-    # create conflicts across clients.
-    for key in ("name", "id", "mod", "usn", "newToday", "revToday", "lrnToday", "timeToday"):
+DECK_BOOKKEEPING_KEYS = (
+    "name", "id", "mod", "usn",
+    "newToday", "revToday", "lrnToday", "timeToday",
+    # Anki's "today only" limit overrides are daily bookkeeping too; Kelma
+    # Review ignores them.
+    "newLimitToday", "reviewLimitToday",
+)
+
+
+def normalize_deck_config(config: dict[str, Any]) -> dict[str, Any]:
+    """The cross-client form of a deck config, for local and server copies.
+
+    Name is the identity; id/mod/usn and the daily counters are local
+    bookkeeping. Current Anki adds optional keys as null (desiredRetention,
+    newLimit, reviewLimit, …) that other clients omit, so null and absent mean
+    the same thing.
+    """
+    cfg = {key: value for key, value in dict(config or {}).items() if value is not None}
+    for key in DECK_BOOKKEEPING_KEYS:
         cfg.pop(key, None)
     return cfg
+
+
+def _normalized_deck_config(deck: dict[str, Any]) -> dict[str, Any]:
+    return normalize_deck_config(deck)
+
+
+def normalize_notetype_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    """The cross-client form of a notetype definition (local or server copy)."""
+    return _normalized_notetype_definition(definition)
 
 
 def _normalized_notetype_definition(nt: dict[str, Any]) -> dict[str, Any]:
     definition = dict(nt)
     # notetype_id/name are stored separately; mod/usn are local bookkeeping.
-    for key in ("id", "mod", "usn"):
+    # originalStockKind/originalId record which stock type this one was cloned
+    # from, and req is derived from the templates by Anki: current Anki adds or
+    # recomputes them on load, other clients omit them.
+    for key in ("id", "mod", "usn", "originalStockKind", "originalId", "req"):
         definition.pop(key, None)
     # Deep-normalize: remove auto-generated ids and materialize properties that
     # newer Anki releases require. A missing property from an old client and

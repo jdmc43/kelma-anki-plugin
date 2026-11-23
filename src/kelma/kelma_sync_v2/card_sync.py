@@ -167,6 +167,7 @@ def sync_cards_once(
     accept_server_timestamp_truncation: bool = False,
     server_authoritative_keys: set[str] | None = None,
     scheduling_mode: str = "server_fsrs",
+    day_mapper=None,
 ) -> CardSyncResult:
     use_server_scheduling = scheduling_mode != "local_anki"
     if progress:
@@ -359,6 +360,7 @@ def sync_cards_once(
                         apply_study_state=apply_state,
                         apply_schedule_reset=apply_reset,
                         apply_due_date_override=apply_due_date,
+                        day_mapper=day_mapper,
                     )
                     if apply_state and server_id in server_state_ids and applied_id:
                         result.study_state_pulled_card_ids.append(int(applied_id))

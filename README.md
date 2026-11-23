@@ -91,6 +91,24 @@ Notes, cards, immutable review history, notetypes, decks, media, tombstones,
 study state, reset cutoffs, and manual due dates use the existing KelmaSync v2
 newest-wins pipeline. Passwords are never stored.
 
+**Same due dates as Kelma Review.** KelmaSync schedules every card with FSRS-6
+from its review history. The add-on places those schedules on the account's
+study days (time zone and day-start hour from the study-day policy), exactly as
+Kelma Review does: a review card is due at the start of the study day "study day
+of the last review + interval", and learning steps that cross into a later study
+day become due that day. Anki's "next day starts at" follows the account, and
+Anki's deck presets get the account's FSRS parameters, desired retention,
+learning steps and maximum interval, so reviews done in Anki schedule the same
+way. After uploading reviews, a sync waits for the server to schedule them and
+pulls the result in the same pass. Cards placed by older versions on UTC days
+are moved once (and again if the study-day policy changes).
+
+**Fast repeat syncs.** The last full server manifest is kept next to the
+collection (`kelma_server_manifest.json.gz`); later syncs ask only for what
+changed since then (a full refresh happens at least daily). HTTP connections are
+reused, and deck/notetype records that another client serialised differently are
+compared in normalised form instead of being pulled again on every sync.
+
 Large media restores use the same prepared-TAR protocol as Kelma Kotlin: 128 MiB
 / 10,000-file batches, up to five concurrent preparations in first-ready order,
 and exactly one streaming TAR GET at a time. Interrupted one-shot jobs are
