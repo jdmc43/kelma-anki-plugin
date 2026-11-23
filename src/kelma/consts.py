@@ -1,6 +1,6 @@
 """Shared constants for the Kelma add-on."""
 
-KELMA_CLIENT_VERSION = "1.0.133"
+KELMA_CLIENT_VERSION = "1.0.134"
 UPDATE_MANIFEST_URL = "https://kelma.tech/updates/v1.json"
 
 # Cloud providers. Each Anki profile is assigned to exactly one.
