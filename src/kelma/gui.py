@@ -422,7 +422,9 @@ class V2LoginDialog(QDialog):
         self.username_value = ""
         self.client_label = "KelmaDesktop" if config.kelmasync_only() else "Anki plugin"
 
-        self.setWindowTitle("Sign in to Kelma Desktop")
+        self.setWindowTitle(
+            "Sign in to KelmaDesktop" if config.kelmasync_only() else "Sign in to KelmaSync"
+        )
         self.setModal(True)
         self.setMinimumWidth(420)
 
