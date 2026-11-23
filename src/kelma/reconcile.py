@@ -72,25 +72,6 @@ def _export_import(
             pass
 
 
-def reconcile_decks(
-    src: Collection,
-    dst: Collection,
-    deck_names: list[str],
-    with_media: bool = True,
-    *,
-    merge_notetypes: bool = True,
-) -> int:
-    """Batched reconcile: copy all requested decks' content in one apkg.
-
-    Returns the number of cards considered (0 if nothing to do).
-    """
-    card_ids = _card_ids_for_decks(src, deck_names)
-    if not card_ids:
-        return 0
-    _export_import(src, dst, card_ids, with_media, merge_notetypes)
-    return len(card_ids)
-
-
 def reconcile_deck(
     src: Collection,
     dst: Collection,

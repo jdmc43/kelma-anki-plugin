@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import time
 from typing import Any
 
 from anki.collection import Collection
@@ -27,7 +26,6 @@ class ReviewSyncResult:
     skipped: int = 0
     study_days_pushed: int = 0
     study_days_applied: int = 0
-    study_days_marked_pending: int = 0
     conflicts: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -231,18 +229,13 @@ def _merge_study_day(
     return merged
 
 
-def _apply_study_day(
-    col: Collection,
-    record: dict[str, Any],
-    *,
-    mark_pending_for_ankiweb: bool = False,
-) -> tuple[bool, bool]:
+def _apply_study_day(col: Collection, record: dict[str, Any]) -> bool:
     name = str(record.get("deck_name") or "")
     if not name:
-        return False, False
+        return False
     deck = col.decks.by_name(name)
     if not deck:
-        return False, False
+        return False
     local_day = int(record.get("day", 0) or 0) - int(col.crt) // 86400
 
     changed = False
@@ -252,24 +245,14 @@ def _apply_study_day(
         if current != (local_day, incoming):
             deck[local] = [local_day, incoming]
             changed = True
-    already_pending = int(deck.get("usn", 0) or 0) == -1
-    needs_write = changed or (mark_pending_for_ankiweb and not already_pending)
-    if not needs_write:
-        return False, mark_pending_for_ankiweb
+    if not changed:
+        return False
 
-    if mark_pending_for_ankiweb:
-        # Native AnkiWeb sync only sends deck counters when the deck is pending.
-        # The three-way plugin records a signature after successful publication
-        # so unchanged counters are not re-marked on every comparison.
-        deck["mod"] = int(time.time())
-        deck["usn"] = -1
-    else:
-        # Kelma-only clients should not turn synchronized bookkeeping into a
-        # structural deck edit.
-        deck["mod"] = deck.get("mod", 0)
-        deck["usn"] = deck.get("usn", 0)
+    # Synchronized bookkeeping is not a structural deck edit.
+    deck["mod"] = deck.get("mod", 0)
+    deck["usn"] = deck.get("usn", 0)
     col.decks.update(deck, preserve_usn=True)
-    return changed, mark_pending_for_ankiweb
+    return True
 
 
 def _clear_review_usns(col: Collection, review_ids: list[int]) -> None:
@@ -288,7 +271,6 @@ def sync_reviews_once(
     *,
     deck_names: list[str] | None = None,
     clear_pending_usn: bool = False,
-    mark_study_days_pending: bool = False,
     progress=None,
 ) -> ReviewSyncResult:
     """Union local/server revlogs, then converge portable same-day counters."""
@@ -350,8 +332,6 @@ def sync_reviews_once(
         if progress:
             progress(f"Reviews: downloaded {result.pulled}/{len(pull_ids)} history row(s)")
     # Make downloaded history durable before a potentially large first upload.
-    # This also lets the three-way Anki plugin immediately publish pulled rows
-    # to AnkiWeb (incoming_usn=-1) even if the Kelma backfill later fails.
     if result.pulled:
         col.save()
 
@@ -415,22 +395,14 @@ def sync_reviews_once(
         current = latest_by_deck.get(name)
         latest_by_deck[name] = _merge_study_day(current, record)
     for record in latest_by_deck.values():
-        applied, marked_pending = _apply_study_day(
-            col,
-            record,
-            mark_pending_for_ankiweb=mark_study_days_pending,
-        )
-        if applied:
+        if _apply_study_day(col, record):
             result.study_days_applied += 1
-        if marked_pending:
-            result.study_days_marked_pending += 1
-    if result.study_days_applied or result.study_days_marked_pending:
+    if result.study_days_applied:
         col.save()
 
     if progress:
         progress(
             f"Reviews complete: pushed {result.pushed}, pulled {result.pulled}, "
-            f"in sync {result.skipped}; daily counters applied {result.study_days_applied}, "
-            f"queued for AnkiWeb {result.study_days_marked_pending}"
+            f"in sync {result.skipped}; daily counters applied {result.study_days_applied}"
         )
     return result

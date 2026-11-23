@@ -154,8 +154,7 @@ def apply_card(
             col.sched.unsuspend_cards([cid])
             col.db.execute("UPDATE cards SET mod=?, usn=0 WHERE id=?", mod, cid)
 
-    # Do NOT leave usn=-1 here. A KelmaSync pull is not automatically an
-    # AnkiWeb edit; the explicit publish step marks chosen cards pending.
+    # Do NOT leave usn=-1 here: a KelmaSync pull is not a local edit.
     return cid
 
 
