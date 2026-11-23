@@ -15,7 +15,7 @@ from concurrent.futures import Future
 from datetime import datetime
 from pathlib import Path
 
-from aqt import mw
+from aqt import gui_hooks, mw
 from aqt.qt import (
     QAbstractItemView,
     QAction,
@@ -38,6 +38,7 @@ from aqt.qt import (
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
+    QTimer,
     Qt,
     QVBoxLayout,
     QWidget,
@@ -45,7 +46,7 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip, askUser
 
-from . import accounts, branding, config, consts, deckbadges, features, state, updater
+from . import accounts, branding, config, consts, deckbadges, features, legacy_copies, paths, state, updater
 
 _orig_sync = None
 _V2_ACTIVE_ACTION: str | None = None
@@ -1702,6 +1703,71 @@ def _toggle_feature(key: str, checked: bool) -> None:
         pass
 
 
+_legacy_checked_profiles: set[str] = set()
+
+
+def _install_legacy_copy_check() -> None:
+    """Check this profile now and every profile opened later in the session."""
+    gui_hooks.profile_did_open.append(_schedule_legacy_copy_check)
+    _schedule_legacy_copy_check()
+
+
+def _schedule_legacy_copy_check() -> None:
+    QTimer.singleShot(2000, _offer_legacy_copy_cleanup)
+
+
+def _offer_legacy_copy_cleanup() -> None:
+    """Offer once to delete the hidden copies left by dual-sync releases."""
+    if mw is None or mw.col is None:
+        return
+    profile_dir = paths.profile_dir()
+    if profile_dir in _legacy_checked_profiles:
+        return
+    _legacy_checked_profiles.add(profile_dir)
+    found = legacy_copies.find(profile_dir)
+    if not found or state.load().get("legacy_copies_declined"):
+        return
+
+    def measured(future: Future) -> None:
+        if mw.col is None or paths.profile_dir() != profile_dir:
+            return  # the profile changed meanwhile; ask next time it opens
+        try:
+            size_mb = future.result() / (1024 * 1024)
+        except Exception:  # noqa: BLE001
+            size_mb = 0.0
+        if not askUser(
+            "Older versions of the Kelma add-on kept hidden copies of this "
+            f"collection in the profile folder ({size_mb:,.0f} MB). They are no "
+            "longer used.\n\nDelete them? Your collection and media are not affected.",
+            parent=mw,
+            title="Kelma",
+        ):
+            st = state.load()
+            st["legacy_copies_declined"] = True
+            state.save(st)
+            tooltip("Kept the old copies (kelma_shadow_* in the profile folder).")
+            return
+
+        def deleted(done: Future) -> None:
+            try:
+                failed = done.result()
+            except Exception as err:  # noqa: BLE001
+                tooltip(f"Could not delete the old copies: {err}")
+                return
+            if failed:
+                tooltip(f"Could not delete {len(failed)} old copy file(s) in the profile folder.")
+            else:
+                tooltip(f"Deleted the old copies ({size_mb:,.0f} MB freed).")
+
+        mw.taskman.run_in_background(
+            lambda: legacy_copies.delete(found), deleted, uses_collection=False
+        )
+
+    mw.taskman.run_in_background(
+        lambda: legacy_copies.total_bytes(found), measured, uses_collection=False
+    )
+
+
 def setup() -> None:
     """Entry point, called once after the profile/collection is ready."""
     # Each step is independent so a failure in one doesn't break the others.
@@ -1718,6 +1784,7 @@ def setup() -> None:
     # AnkiWeb auto-sync. The guard dynamically allows native sync only for a
     # profile explicitly assigned to AnkiWeb.
     steps.insert(2, ("native AnkiWeb guard", _install_native_sync_guard))
+    steps.append(("old dual-sync copies", _install_legacy_copy_check))
 
     for label, fn in steps:
         try:

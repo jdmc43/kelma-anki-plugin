@@ -107,10 +107,11 @@ On first launch:
 No cloud sync runs from an unconfigured profile.
 
 The hidden copies the old releases kept next to each collection are no longer
-used. Once the profile syncs correctly you can delete them from the profile
-folder to free space: `kelma_shadow_kelmasync.anki2` and
+used. When a profile still has them, the add-on offers once to delete them;
+answering No keeps them and it does not ask again. They can also be deleted by
+hand from the profile folder: `kelma_shadow_kelmasync.anki2` and
 `kelma_shadow_ankiweb.anki2`, each with its `.media` folder and `.media.db2`
-file.
+file. The profile's own collection and media are never touched.
 
 ## Install (development)
 
