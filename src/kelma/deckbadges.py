@@ -9,7 +9,7 @@ import time
 from anki.media import media_paths_from_col_path
 from aqt import mw, gui_hooks
 
-from . import config, consts, features, paths, state
+from . import config, consts, features, state
 
 _installed = False
 
@@ -76,17 +76,14 @@ def _dir_size(path: str) -> int:
     return total
 
 
-def _compute_size(shadow_path: str, fallback_col_path: str = "") -> int:
-    # v2 has no shadow collection: measure the real collection + media instead
-    # of reporting a permanent 0.00 GB from a file that never exists.
-    if not os.path.exists(shadow_path) and fallback_col_path:
-        shadow_path = fallback_col_path
+def _compute_size(col_path: str) -> int:
+    """Local collection file + media folder + media database, in bytes."""
     total = 0
     try:
-        total += os.path.getsize(shadow_path)
+        total += os.path.getsize(col_path)
     except OSError:
         pass
-    media_folder, media_db = media_paths_from_col_path(shadow_path)
+    media_folder, media_db = media_paths_from_col_path(col_path)
     if os.path.isdir(media_folder):
         total += _dir_size(media_folder)
     try:
@@ -110,8 +107,7 @@ def _ensure_size(service: str) -> None:
     if service in _size_running:
         return
     _size_running.add(service)
-    shadow_path = paths.shadow_path(service)  # resolve on the main thread
-    col_path = str(getattr(mw.col, "path", "") or "")
+    col_path = str(getattr(mw.col, "path", "") or "")  # resolve on the main thread
     cfg = config.get()
     endpoint = str(cfg.get("v2_url") or consts.DEFAULT_V2_URL)
     token = str(cfg.get("v2_token") or "")
@@ -128,10 +124,8 @@ def _ensure_size(service: str) -> None:
                 .usage()
                 .get("used_bytes", 0)
             )
-        if service == consts.ANKIWEB:
-            # Native AnkiWeb sync covers the real collection, not a v1 shadow.
-            return _compute_size("", col_path)
-        return _compute_size(shadow_path, col_path)
+        # Native AnkiWeb sync covers the real collection.
+        return _compute_size(col_path)
 
     def done(future) -> None:
         try:
@@ -185,7 +179,7 @@ def _on_render(deck_browser, content) -> None:
         pending = {s: state.pending_by_did(mw.col, s) for s in config.ui_services()}
         names = {d.id: d.name for d in mw.col.decks.all_names_and_ids()}
 
-        # Per-cloud "size" = total cards across the decks routed to that cloud.
+        # Per-cloud "size" = total cards in this profile's account.
         did_counts = {
             did: cnt
             for did, cnt in mw.col.db.all(
