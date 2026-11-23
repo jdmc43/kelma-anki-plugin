@@ -20,6 +20,17 @@ through **Transfer decks between accounts…**. Insert copies a missing deck,
 Overwrite replaces a target from a preferred account, and Merge resolves two
 designated deck namespaces into both collections. None contacts either cloud.
 
-Legacy routing and shadow-sync keys may remain in global add-on config after an
-upgrade, but normal account sync no longer uses them. Existing global Kelma v2
-credentials are migrated into the profile that is open on first launch.
+Global settings:
+
+- `enabled`: when `false`, the Sync button falls back to Anki's own sync.
+- `wrap_sync_button`: when `true`, the Sync button opens the account sync menu.
+- `block_native_sync`: when `true`, native sync (including auto-sync on open and
+  close) runs only for profiles assigned to AnkiWeb.
+- `check_for_updates`: check kelma.tech for add-on updates.
+- `v2_url`: default KelmaSync server for new sign-ins.
+- `features`: display modifications toggled under **Display modifications**.
+
+Existing global Kelma v2 credentials are migrated into the profile that is open
+on first launch. Settings left over from the retired dual-sync releases (hidden
+collection copies, per-deck routing, v1 host keys) are removed the next time
+the add-on saves its configuration.

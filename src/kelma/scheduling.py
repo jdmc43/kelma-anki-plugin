@@ -1,18 +1,17 @@
-"""Propagate per-card scheduling between the master and a service shadow.
+"""Propagate per-card scheduling between two collections (deck transfer).
 
-Why this exists: the reconcile copies decks with Anki's apkg importer, which
+Why this exists: deck transfer copies decks with Anki's apkg importer, which
 matches cards by (note, template ordinal) and *skips* any card that already
 exists — its source carries a literal `// TODO: could update existing card`. So
-when you review a card on one device, the note content still merges by GUID, but
-the card's scheduling state (queue / due / interval / ease / reps / lapses /
-FSRS data) is never carried to the matching card on the other side. Reviews
-silently don't sync.
+when a deck is merged into an account that already has it, note content merges
+by GUID, but the card's scheduling state (queue / due / interval / ease / reps /
+lapses / FSRS data) would never reach the matching card on the other side.
 
 This module fills that gap. For the given decks it pairs cards across the two
 collections by (note GUID, template ordinal) — the stable identity, since the
 importer assigns each collection its own card ids — and, newest-mtime-wins,
 copies the scheduling columns from src to dst, marking the dst card pending
-(usn=-1) so the shadow's native sync uploads it.
+(usn=-1) so the destination account's next sync uploads it.
 
 Date correctness: review and day-learn `due`/`odue` values are stored as days
 since each collection's creation (`crt`). When the two collections were created
@@ -65,11 +64,6 @@ def _shift_odue(odue: int, delta_days: int) -> int:
     if delta_days == 0 or odue == 0:
         return odue
     return odue + delta_days
-
-
-def sync_scheduling(src: Collection, dst: Collection, deck_names: list[str]) -> int:
-    """Copy newer scheduling between decks with the same names."""
-    return sync_scheduling_between_decks(src, dst, deck_names, deck_names)
 
 
 def sync_scheduling_between_decks(
@@ -167,6 +161,6 @@ def sync_scheduling_between_decks(
         "lapses=?, left=?, odue=?, flags=?, data=?, mod=?, usn=-1 where id=?",
         updates,
     )
-    # Mark the collection changed so the shadow's native sync uploads the cards.
+    # Mark the collection changed so the next sync uploads the cards.
     dst.db.execute("update col set mod=?", int(time.time() * 1000))
     return len(updates)

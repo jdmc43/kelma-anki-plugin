@@ -16,13 +16,6 @@ from . import accounts, consts
 ADDON = __name__.split(".")[0]
 
 _ACCOUNT_KEYS = {
-    "kelmasync_url",
-    "kelmasync_hkey",
-    "kelmasync_user",
-    "kelmasync_path",
-    "ankiweb_hkey",
-    "ankiweb_user",
-    "sync_media",
     "v2_url",
     "v2_username",
     "v2_token",
@@ -33,13 +26,6 @@ _ACCOUNT_KEYS = {
     "v2_scheduling_mode",
 }
 _ACCOUNT_DEFAULTS: dict[str, Any] = {
-    "kelmasync_url": consts.DEFAULT_KELMA_URL,
-    "kelmasync_hkey": "",
-    "kelmasync_user": "",
-    "kelmasync_path": consts.PATH_AUTO,
-    "ankiweb_hkey": "",
-    "ankiweb_user": "",
-    "sync_media": True,
     "v2_url": consts.DEFAULT_V2_URL,
     "v2_username": "",
     "v2_token": "",
@@ -50,6 +36,23 @@ _ACCOUNT_DEFAULTS: dict[str, Any] = {
     "v2_scheduling_mode": "server_fsrs",
 }
 _ACCOUNT_CONFIG_FILENAME = "kelma-cloud-account.json"
+
+# Settings of the retired dual-sync releases (hidden per-service collection
+# copies, v1 host-key logins, per-deck routing). Nothing reads them any more;
+# `save` removes them so old host keys don't linger in the add-on config.
+_LEGACY_KEYS = (
+    "kelmasync_url",
+    "kelmasync_hkey",
+    "kelmasync_user",
+    "kelmasync_path",
+    "ankiweb_hkey",
+    "ankiweb_user",
+    "sync_media",
+    "backup_before_sync",
+    "deck_routing",
+    "v2_routing_initialized",
+    "v2_unrouted_decks_local",
+)
 
 
 def _profile_account_path() -> Path | None:
@@ -114,25 +117,13 @@ def get() -> dict[str, Any]:
         if legacy_owner and legacy_owner != current_profile:
             cfg.update(_ACCOUNT_DEFAULTS)
     cfg.setdefault("enabled", True)
-    cfg.setdefault("kelmasync_url", consts.DEFAULT_KELMA_URL)
-    cfg.setdefault("kelmasync_hkey", "")
-    cfg.setdefault("kelmasync_user", "")
-    cfg.setdefault("kelmasync_path", consts.PATH_AUTO)
-    cfg.setdefault("ankiweb_hkey", "")
-    cfg.setdefault("ankiweb_user", "")
-    cfg.setdefault("sync_media", True)
     cfg.setdefault("wrap_sync_button", True)
     cfg.setdefault("block_native_sync", True)
-    cfg.setdefault("backup_before_sync", True)
-    cfg.setdefault("deck_routing", {})
     cfg.setdefault("features", {})
-    # KelmaSync-only mode: hide every AnkiWeb surface (account, sync options,
-    # routing column). Off by default — the standalone plugin is dual-sync; the
-    # KelmaDesktop also enforces this at runtime so shared Anki settings cannot
-    # re-enable native sync inside the Desktop process.
+    # KelmaSync-only mode: every profile is a KelmaSync account and native sync
+    # is never used. Off by default in Anki; KelmaDesktop also enforces this at
+    # runtime so shared Anki settings cannot re-enable native sync there.
     cfg.setdefault("kelmasync_only", False)
-    # KelmaSync v2 experimental REST client config. Kept separate from v1 hkey
-    # auth so the existing sync path remains untouched.
     cfg.setdefault("v2_url", _ACCOUNT_DEFAULTS["v2_url"])
     current_v2_url = str(cfg.get("v2_url") or "").rstrip("/")
     if not current_v2_url or current_v2_url in consts.LEGACY_V2_URLS:
@@ -152,20 +143,12 @@ def get() -> dict[str, Any]:
     cfg.setdefault("v2_scheduling_mode", "server_fsrs")
     if cfg.get("v2_scheduling_mode") not in ("server_fsrs", "local_anki"):
         cfg["v2_scheduling_mode"] = "server_fsrs"
-    # A fresh Anki add-on install must not interpret an empty routing map as
-    # "publish every Anki deck to KelmaSync". Only an explicit routing map (or
-    # the new persisted flag) counts as initialized; an old sync timestamp does
-    # not make the unsafe implicit-all scope explicit. Such profiles go through
-    # the AnkiWeb → KelmaSync → deck-picker flow once after upgrading.
-    if not cfg.get("v2_routing_initialized", False):
-        cfg["v2_routing_initialized"] = bool(cfg.get("deck_routing"))
-    cfg.setdefault("v2_unrouted_decks_local", False)
     return cfg
 
 
 def kelmasync_only() -> bool:
     # KelmaDesktop and regular Anki can share one profile/add-ons directory.
-    # Force Desktop-only routing in memory without persisting it into the
+    # Force Desktop-only mode in memory without persisting it into the
     # standalone Anki plugin's configuration.
     return _running_in_kelma_desktop() or bool(
         get().get("kelmasync_only", False)
@@ -198,6 +181,8 @@ def save(cfg: dict[str, Any]) -> None:
     global_cfg["v2_legacy_profile"] = current_profile
     for key, default in _ACCOUNT_DEFAULTS.items():
         global_cfg[key] = default
+    for key in _LEGACY_KEYS:
+        global_cfg.pop(key, None)
     mw.addonManager.writeConfig(ADDON, global_cfg)
 
 
@@ -205,12 +190,6 @@ def migrate_account_config() -> None:
     """Move legacy global Kelma credentials into the current profile once."""
     if _read_profile_account() is None:
         save(get())
-
-
-def set_value(key: str, value: Any) -> None:
-    cfg = get()
-    cfg[key] = value
-    save(cfg)
 
 
 def has_native_ankiweb_auth() -> bool:
@@ -226,25 +205,10 @@ def has_native_ankiweb_auth() -> bool:
 def has_credentials(service: str) -> bool:
     if service != account_provider():
         return False
-    cfg = get()
     if service == consts.KELMA:
-        # KelmaSync v2 stores a bearer token. The legacy host key may remain on
-        # upgraded profiles, but fresh Desktop/Mobile-era logins only have
-        # v2_token and must still show badges/account state.
-        return bool(cfg.get("v2_token") or cfg.get("kelmasync_hkey"))
-    # v2 uses Anki's native profile authentication. Fresh Windows installs do
-    # not populate the obsolete add-on ankiweb_hkey field.
-    return has_native_ankiweb_auth() or bool(cfg["ankiweb_hkey"])
-
-
-def _normalize(services: Any) -> tuple[str, ...]:
-    if not isinstance(services, (list, tuple)):
-        return ()
-    return tuple(s for s in consts.SERVICES if s in services)
-
-
-def v2_routing_initialized() -> bool:
-    return bool(get().get("v2_routing_initialized", False))
+        return bool(get().get("v2_token"))
+    # AnkiWeb accounts use Anki's native profile login.
+    return has_native_ankiweb_auth()
 
 
 def services_for_deck(deck_name: str) -> tuple[str, ...]:
@@ -255,42 +219,3 @@ def services_for_deck(deck_name: str) -> tuple[str, ...]:
     return ()
 
 
-def legacy_services_for_deck(deck_name: str) -> tuple[str, ...]:
-    """Read old per-deck routing for migration/diagnostic compatibility."""
-    cfg = get()
-    routing: dict[str, Any] = cfg["deck_routing"]
-    if deck_name in routing:
-        services = _normalize(routing[deck_name])
-    else:
-        services = ()
-        parts = deck_name.split("::")
-        for i in range(len(parts) - 1, 0, -1):
-            ancestor = "::".join(parts[:i])
-            if ancestor in routing:
-                services = _normalize(routing[ancestor])
-                break
-        else:
-            if not cfg.get("v2_unrouted_decks_local", False):
-                services = consts.DEFAULT_SERVICES
-    if has_native_ankiweb_auth() and consts.ANKIWEB not in services:
-        services = tuple(
-            service for service in consts.SERVICES
-            if service in services or service == consts.ANKIWEB
-        )
-    return services
-
-
-def decks_for_service(service: str, all_deck_names: list[str]) -> list[str]:
-    return [n for n in all_deck_names if service in services_for_deck(n)]
-
-
-def active_services(all_deck_names: list[str]) -> tuple[str, ...]:
-    """Services to actually sync: enabled, have credentials, and at least one
-    deck routes to them."""
-    if not get()["enabled"]:
-        return ()
-    out = []
-    for s in consts.SERVICES:
-        if has_credentials(s) and decks_for_service(s, all_deck_names):
-            out.append(s)
-    return tuple(out)

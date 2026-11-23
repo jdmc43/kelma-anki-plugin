@@ -89,8 +89,10 @@ account, retains local-only files, and immediately runs the complete resumable p
 
 ## Migration from older dual-sync versions
 
-Older releases used one master collection and automatically reconciled it with
-both services. This release does not attempt to split an already mixed
+Older releases (1.0.131 and earlier) used one master collection, kept a hidden
+copy of it per service, and reconciled it with both AnkiWeb and KelmaSync. That
+machinery is gone: there are no hidden copies, no AnkiWeb comparison, and no
+per-deck routing. This release does not attempt to split an already mixed
 collection automatically, because doing so would require guessing ownership.
 
 On first launch:
@@ -104,10 +106,16 @@ On first launch:
 
 No cloud sync runs from an unconfigured profile.
 
+The hidden copies the old releases kept next to each collection are no longer
+used. Once the profile syncs correctly you can delete them from the profile
+folder to free space: `kelma_shadow_kelmasync.anki2` and
+`kelma_shadow_ankiweb.anki2`, each with its `.media` folder and `.media.db2`
+file.
+
 ## Install (development)
 
 ```bash
-cd /Users/voss/projects/kelma-anki-plugin
+cd kelma-anki-plugin
 ./build.sh dev
 # Fully quit Anki (⌘Q on macOS), then relaunch.
 ```
