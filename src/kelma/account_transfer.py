@@ -354,7 +354,6 @@ class AccountTransferDialog(QDialog):
             profile
             for profile in mw.pm.profiles()
             if profile != mw.pm.name
-            and accounts.provider_for(mw.pm.base, profile) in accounts.PROVIDERS
             and accounts.collection_path(mw.pm.base, profile).exists()
         ]
         for profile in profiles:
