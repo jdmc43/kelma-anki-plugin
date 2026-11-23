@@ -30,9 +30,22 @@ Anki profile / account A                 Anki profile / account B
 - Kelma bearer tokens are stored in a mode-`0600` file inside that profile.
 - The shared account registry stores only profile names and provider types; it
   never stores passwords, tokens, or collection content.
-- An unconfigured profile cannot sync until it is explicitly assigned.
+- Profiles are AnkiWeb accounts unless assigned to KelmaSync, so existing
+  profiles keep syncing with AnkiWeb exactly as before.
 - A Kelma account blocks native AnkiWeb auto-sync. An AnkiWeb account never runs
   KelmaSync during normal sync.
+
+## Getting started
+
+1. Install the add-on and restart Anki. It adds a **Kelma** profile for your
+   Kelma account (once; an existing profile assigned to KelmaSync is reused).
+2. Click **Sync**. The popup has an **AnkiWeb | Kelma** toggle: choose
+   **Kelma** to switch to the Kelma profile. If you are not signed in, the
+   add-on asks you to sign in with your Kelma account (or create one at
+   kelma.tech), then syncs your Kelma decks. Kelma decks show a green ✓, or
+   `+added` / `~changed` until the next sync.
+3. Choose **AnkiWeb** in the same toggle to return to your last AnkiWeb profile.
+   **Tools → Kelma → Switch to … account** does the same.
 
 Open **Tools → Kelma → Accounts and collections…** to assign profiles, switch
 accounts, or open Anki's profile manager to add/remove profiles.
@@ -99,12 +112,11 @@ On first launch:
 
 1. Existing Kelma credentials are moved from global add-on config into the
    currently open profile.
-2. Open **Accounts and collections…** and assign that profile to the provider
-   whose collection it should represent.
-3. Create another Anki profile for the other provider if needed.
+2. The add-on adds a **Kelma** profile; switch to it from the Sync button and
+   sign in to pull your Kelma decks into it.
+3. Profiles not assigned to KelmaSync are AnkiWeb accounts and resume Anki's
+   native sync. Reassign them in **Accounts and collections…** if needed.
 4. Use explicit Merge only for content you intentionally want to copy.
-
-No cloud sync runs from an unconfigured profile.
 
 The hidden copies the old releases kept next to each collection are no longer
 used. When a profile still has them, the add-on offers once to delete them;

@@ -64,5 +64,35 @@ class AccountRegistryTest(unittest.TestCase):
             self.assertEqual(list(Path(base).glob(".kelma-accounts-*")), [])
 
 
+    def test_unassigned_profiles_are_ankiweb(self) -> None:
+        records = {"Kelma": accounts.KELMA, "Old": accounts.ANKIWEB}
+        self.assertEqual(accounts.effective_provider(records, "Kelma"), accounts.KELMA)
+        self.assertEqual(accounts.effective_provider(records, "Old"), accounts.ANKIWEB)
+        self.assertEqual(accounts.effective_provider(records, "User 1"), accounts.ANKIWEB)
+
+    def test_kelma_profile_prefers_the_one_named_kelma(self) -> None:
+        profiles = ["Arabic", "kelma", "User 1"]
+        self.assertEqual(
+            accounts.kelma_profile({"Arabic": accounts.KELMA, "kelma": accounts.KELMA}, profiles),
+            "kelma",
+        )
+        self.assertEqual(accounts.kelma_profile({"Arabic": accounts.KELMA}, profiles), "Arabic")
+        # A profile merely named Kelma is not the Kelma account until assigned.
+        self.assertIsNone(accounts.kelma_profile({}, profiles))
+
+    def test_ankiweb_profile_returns_to_the_last_one_used(self) -> None:
+        records = {"Kelma": accounts.KELMA, "Spanish": accounts.ANKIWEB}
+        profiles = ["Kelma", "Spanish", "User 1"]
+        self.assertEqual(accounts.ankiweb_profile(records, profiles, "User 1"), "User 1")
+        self.assertEqual(accounts.ankiweb_profile(records, profiles, "Kelma"), "Spanish")
+        self.assertEqual(accounts.ankiweb_profile(records, profiles, None), "Spanish")
+        self.assertIsNone(accounts.ankiweb_profile(records, ["Kelma"], None))
+
+    def test_unused_profile_name_ignores_case(self) -> None:
+        self.assertEqual(accounts.unused_profile_name(["User 1"], "Kelma"), "Kelma")
+        self.assertEqual(accounts.unused_profile_name(["kelma"], "Kelma"), "Kelma 2")
+        self.assertEqual(accounts.unused_profile_name(["Kelma", "KELMA 2"], "Kelma"), "Kelma 3")
+
+
 if __name__ == "__main__":
     unittest.main()

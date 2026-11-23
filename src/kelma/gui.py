@@ -156,9 +156,7 @@ _ACCOUNT_LABELS = {
 
 
 def _current_account_provider() -> str | None:
-    if config.kelmasync_only():
-        return accounts.KELMA
-    return accounts.provider_for(mw.pm.base, mw.pm.name)
+    return config.account_provider()
 
 
 def _current_account_label() -> str:
@@ -176,8 +174,8 @@ class AccountDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(_brand_header("Separate cloud accounts"))
         help_text = QLabel(
-            "Each Anki profile is one account with its own collection. Assign it "
-            "to either AnkiWeb or KelmaSync. Normal sync only contacts that "
+            "Each Anki profile is one account with its own collection, synced "
+            "with either AnkiWeb or KelmaSync. Normal sync only contacts that "
             "account; decks move between accounts only through explicit Transfer operations."
         )
         help_text.setWordWrap(True)
@@ -200,10 +198,9 @@ class AccountDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, profile)
             self.table.setItem(row, 0, item)
             selector = QComboBox()
-            selector.addItem("Not configured", None)
             selector.addItem("AnkiWeb", accounts.ANKIWEB)
             selector.addItem("KelmaSync", accounts.KELMA)
-            selected = selector.findData(records.get(profile))
+            selected = selector.findData(accounts.effective_provider(records, profile))
             selector.setCurrentIndex(max(0, selected))
             self.table.setCellWidget(row, 1, selector)
             self._selectors[profile] = selector
@@ -259,16 +256,8 @@ class AccountDialog(QDialog):
         if profile == mw.pm.name:
             tooltip("That account is already open.", parent=self)
             return
-        if not accounts.provider_for(mw.pm.base, profile):
-            tooltip("Assign the selected account to AnkiWeb or KelmaSync first.", parent=self)
-            return
         self.accept()
-
-        def open_profile() -> None:
-            mw.pm.openProfile(profile)
-            mw.loadProfile()
-
-        mw.unloadProfile(open_profile)
+        _switch_to_profile(profile)
 
     def _merge(self) -> None:
         if _V2_ACTIVE_ACTION:
@@ -300,11 +289,10 @@ def _merge_profile_into_current(source_profile: str | None = None) -> None:
         account.profile
         for account in accounts.accounts(mw.pm.base, list(mw.pm.profiles()))
         if account.profile != mw.pm.name
-        and account.provider in accounts.PROVIDERS
         and accounts.collection_path(mw.pm.base, account.profile).exists()
     ]
     if not candidates:
-        tooltip("Create and configure another account before transferring decks.")
+        tooltip("Open another account once (for example Kelma) before transferring decks.")
         return
     if source_profile is not None and source_profile not in candidates:
         tooltip("The selected account collection is unavailable.")
@@ -367,13 +355,13 @@ _orig_collection_sync = None
 
 
 def _install_native_sync_guard() -> None:
-    """Allow Anki's native sync only for profiles assigned to AnkiWeb.
+    """Never run Anki's native sync for KelmaSync profiles.
 
     `_sync_collection_and_media` is the single chokepoint for Anki's native sync —
     auto-sync on open/close, the Y shortcut, and the (unwrapped) Sync button all
-    route through it. For KelmaSync and unassigned profiles we make it a no-op
-    (still calling the continuation so open/close proceeds), so their
-    collections never reach whichever AnkiWeb login happens to be present.
+    route through it. For KelmaSync profiles we make it a no-op (still calling
+    the continuation so open/close proceeds), so a Kelma collection never reaches
+    whichever AnkiWeb login happens to be present.
     """
     global _orig_collection_sync
     if _orig_collection_sync is not None:
@@ -388,8 +376,8 @@ def _install_native_sync_guard() -> None:
             and cfg.get("block_native_sync", True)
             and provider != accounts.ANKIWEB
         ):
-            # Kelma and unconfigured accounts must never auto-sync their
-            # collection into whichever AnkiWeb login happens to be present.
+            # Kelma collections must never auto-sync into whichever AnkiWeb
+            # login happens to be present.
             after_sync()
         else:
             _orig_collection_sync(after_sync)
@@ -432,7 +420,7 @@ class V2LoginDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 16)
         layout.setSpacing(8)
 
-        title = QLabel("Sign in with Kelma Immersion")
+        title = QLabel("Sign in to your Kelma account")
         font = title.font()
         font.setPointSize(15)
         font.setBold(True)
@@ -451,7 +439,7 @@ class V2LoginDialog(QDialog):
         layout.addWidget(account_help)
         layout.addSpacing(6)
 
-        layout.addWidget(QLabel("Kelma Immersion email"))
+        layout.addWidget(QLabel("Email"))
         self.email = QLineEdit(str(cfg.get("v2_username", "")))
         self.email.setPlaceholderText("you@example.com")
         layout.addWidget(self.email)
@@ -474,6 +462,13 @@ class V2LoginDialog(QDialog):
         self.error.setWordWrap(True)
         self.error.hide()
         layout.addWidget(self.error)
+
+        links = QLabel(
+            '<a href="https://kelma.tech/signup">Create a free Kelma account</a>'
+            ' &nbsp;·&nbsp; <a href="https://kelma.tech/signin">Forgot password?</a>'
+        )
+        links.setOpenExternalLinks(True)
+        layout.addWidget(links)
 
         layout.addSpacing(4)
         buttons = QDialogButtonBox()
@@ -1269,27 +1264,135 @@ def _kelma_desktop_sync_menu() -> None:
 
 
 def _v2_compare_or_onboard() -> None:
-    provider = _current_account_provider()
-    if config.kelmasync_only() or provider == accounts.KELMA:
+    if _current_account_provider() == accounts.KELMA:
         V2FullDiffDialog(mw).exec()
-    elif provider == accounts.ANKIWEB:
-        tooltip("Use Anki's native sync status for this AnkiWeb account, or Merge to compare collections.")
     else:
-        AccountDialog(mw).exec()
+        tooltip("Use Anki's native sync status for this AnkiWeb account, or Merge to compare collections.")
 
 
 def _sync_current_account() -> None:
-    provider = _current_account_provider()
-    if provider is None:
-        AccountDialog(mw).exec()
-    elif provider == accounts.KELMA:
+    if _current_account_provider() == accounts.KELMA:
         _v2_sync_kelma()
     elif _orig_sync:
         _orig_sync()
 
 
+# -----------------------------------------------------------------------------
+# The Kelma profile and switching between AnkiWeb and Kelma
+# -----------------------------------------------------------------------------
+def _switch_to_profile(name: str, then=None) -> None:
+    """Close the open profile and open `name`, then run `then`."""
+    if name == mw.pm.name:
+        if then:
+            then()
+        return
+
+    def open_profile() -> None:
+        mw.pm.openProfile(name)
+        mw.loadProfile(then if mw.pm.name == name else None)
+
+    mw.unloadProfile(open_profile)
+
+
+def _create_profile(name: str, provider: str) -> None:
+    mw.pm.create(name)
+    accounts.set_provider(mw.pm.base, name, provider)
+
+
+def _ensure_kelma_profile() -> None:
+    """Add a "Kelma" profile for the Kelma account the first time we run."""
+    if config.kelmasync_only() or config.get_global("kelma_profile_created"):
+        return
+    records = accounts.load_registry(mw.pm.base)
+    profiles = list(mw.pm.profiles())
+    if accounts.kelma_profile(records, profiles) is None:
+        name = accounts.unused_profile_name(profiles, accounts.KELMA_PROFILE_NAME)
+        _create_profile(name, accounts.KELMA)
+        QTimer.singleShot(
+            1500,
+            lambda: tooltip(
+                f"Added a “{name}” profile for your Kelma account. "
+                "Click Sync to switch to it.",
+                period=8000,
+            ),
+        )
+    config.set_global("kelma_profile_created", True)
+
+
+def _remember_ankiweb_profile() -> None:
+    if mw.pm.name and _current_account_provider() == accounts.ANKIWEB:
+        config.set_global("last_ankiweb_profile", mw.pm.name)
+
+
+def _install_profile_tracking() -> None:
+    gui_hooks.profile_did_open.append(_remember_ankiweb_profile)
+    _remember_ankiweb_profile()
+
+
+def _switch_account(provider: str) -> None:
+    """Open the Kelma or AnkiWeb profile; switching to Kelma also syncs it."""
+    if _V2_ACTIVE_ACTION:
+        tooltip(_v2_active_message() or "Wait for synchronization to finish.")
+        return
+    records = accounts.load_registry(mw.pm.base)
+    profiles = list(mw.pm.profiles())
+    if provider == accounts.KELMA:
+        target = accounts.kelma_profile(records, profiles)
+        if target is None:
+            target = accounts.unused_profile_name(profiles, accounts.KELMA_PROFILE_NAME)
+            _create_profile(target, accounts.KELMA)
+        # Signing in (if needed) and the first sync happen once it is open.
+        _switch_to_profile(target, then=lambda: QTimer.singleShot(300, _v2_sync_kelma))
+    else:
+        target = accounts.ankiweb_profile(
+            records, profiles, config.get_global("last_ankiweb_profile")
+        )
+        if target is None:
+            target = accounts.unused_profile_name(profiles, accounts.ANKIWEB_PROFILE_NAME)
+            _create_profile(target, accounts.ANKIWEB)
+        _switch_to_profile(target)
+
+
+def _other_account_label() -> str:
+    if _current_account_provider() == accounts.KELMA:
+        return "Switch to AnkiWeb account"
+    return "Switch to Kelma account"
+
+
+def _switch_to_other_account() -> None:
+    _switch_account(
+        accounts.ANKIWEB if _current_account_provider() == accounts.KELMA else accounts.KELMA
+    )
+
+
+_TOGGLE_COLORS = {accounts.ANKIWEB: "#2563eb", accounts.KELMA: "#16a34a"}
+_TOGGLE_HOVER = {accounts.ANKIWEB: "#1d4ed8", accounts.KELMA: "#15803d"}
+
+
+def _toggle_button(text: str, provider: str, checked: bool, side: str) -> QPushButton:
+    button = QPushButton(text)
+    button.setCheckable(True)
+    button.setChecked(checked)
+    button.setMinimumHeight(38)
+    button.setMinimumWidth(130)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    radius = (
+        "border-top-left-radius:8px;border-bottom-left-radius:8px;"
+        if side == "left"
+        else "border-top-right-radius:8px;border-bottom-right-radius:8px;"
+    )
+    color = _TOGGLE_COLORS[provider]
+    button.setStyleSheet(
+        f"QPushButton{{font-size:15px;font-weight:600;padding:6px 18px;"
+        f"border:1px solid {color};{radius}background:transparent;color:{color};}}"
+        f"QPushButton:checked{{background:{color};color:white;}}"
+        f"QPushButton:hover:!checked{{background:rgba(127,127,127,0.12);}}"
+    )
+    return button
+
+
 def _v2_sync_menu() -> None:
-    """Sync only the current profile-backed account by default."""
+    """The Sync button: an AnkiWeb / Kelma account toggle and one Sync action."""
     if _V2_ACTIVE_ACTION:
         tooltip(_v2_active_message() or "A sync operation is already running.")
         return
@@ -1297,35 +1400,91 @@ def _v2_sync_menu() -> None:
         _kelma_desktop_sync_menu()
         return
 
-    provider = _current_account_provider()
+    on_kelma = _current_account_provider() == accounts.KELMA
+    cfg = config.get()
     menu = QMenu(mw)
-    header = QWidget()
-    layout = QVBoxLayout(header)
-    layout.setContentsMargins(14, 8, 14, 8)
-    layout.addWidget(_brand_header("Cloud account"))
-    detail = QLabel(
-        f"<b>{_esc(mw.pm.name)}</b> · {_esc(_current_account_label())}<br>"
-        "<span style='color:#aaa'>This collection syncs only with its assigned cloud.</span>"
+    picked: dict[str, str | None] = {"action": None}
+
+    def pick(action: str) -> None:
+        # Act after the menu's own event loop returns (a nested modal loop
+        # started from inside it would freeze the UI).
+        picked["action"] = action
+        menu.close()
+
+    panel = QWidget()
+    box = QVBoxLayout(panel)
+    box.setContentsMargins(14, 10, 14, 10)
+    box.setSpacing(10)
+    box.addWidget(_brand_header("Sync"))
+
+    toggle = QHBoxLayout()
+    toggle.setSpacing(0)
+    ankiweb_button = _toggle_button("AnkiWeb", accounts.ANKIWEB, not on_kelma, "left")
+    kelma_button = _toggle_button("Kelma", accounts.KELMA, on_kelma, "right")
+    ankiweb_button.setToolTip("Use an AnkiWeb profile")
+    kelma_button.setToolTip("Switch to your Kelma account")
+    ankiweb_button.clicked.connect(
+        lambda: pick("ankiweb") if on_kelma else ankiweb_button.setChecked(True)
     )
-    layout.addWidget(detail)
-    widget_action = QWidgetAction(menu)
-    widget_action.setDefaultWidget(header)
-    menu.addAction(widget_action)
+    kelma_button.clicked.connect(
+        lambda: kelma_button.setChecked(True) if on_kelma else pick("kelma")
+    )
+    toggle.addWidget(ankiweb_button)
+    toggle.addWidget(kelma_button)
+    box.addLayout(toggle)
+
+    if on_kelma:
+        signed_in = bool(cfg.get("v2_token"))
+        who = _esc(cfg.get("v2_username") or "signed in") if signed_in else "not signed in"
+        status_text = f"<b>Kelma account</b> · {who}"
+        if mw.pm.name.casefold() != accounts.KELMA_PROFILE_NAME.casefold():
+            status_text += f"<br><span style='color:#888'>Profile “{_esc(mw.pm.name)}”</span>"
+        primary_text = "Sync with Kelma" if signed_in else "Sign in and sync"
+    else:
+        user = str((getattr(mw.pm, "profile", None) or {}).get("syncUser") or "")
+        who = _esc(user) if user else (
+            "signed in" if config.has_native_ankiweb_auth() else "not signed in"
+        )
+        status_text = (
+            f"<b>{_esc(mw.pm.name)}</b> · AnkiWeb · {who}<br>"
+            "<span style='color:#888'>Kelma decks live in your Kelma account: "
+            "switch to Kelma to sync them.</span>"
+        )
+        primary_text = "Sync with AnkiWeb"
+    status = QLabel(status_text)
+    status.setWordWrap(True)
+    box.addWidget(status)
+
+    primary = QPushButton(primary_text)
+    primary.setMinimumHeight(36)
+    primary.setDefault(True)
+    primary.setCursor(Qt.CursorShape.PointingHandCursor)
+    current = accounts.KELMA if on_kelma else accounts.ANKIWEB
+    primary.setStyleSheet(
+        f"QPushButton{{font-size:14px;font-weight:600;padding:8px 14px;border:none;"
+        f"border-radius:8px;background:{_TOGGLE_COLORS[current]};color:white;}}"
+        f"QPushButton:hover{{background:{_TOGGLE_HOVER[current]};}}"
+    )
+    primary.clicked.connect(lambda: pick("sync"))
+    box.addWidget(primary)
+    panel.setMinimumWidth(320)
+
+    panel_action = QWidgetAction(menu)
+    panel_action.setDefaultWidget(panel)
+    menu.addAction(panel_action)
     menu.addSeparator()
-    sync = menu.addAction(
-        f"Sync {_ACCOUNT_LABELS.get(provider, 'current account')}"
-        if provider else "Configure this account before syncing…"
-    )
-    redownload = (
-        menu.addAction("Delete and redownload media…")
-        if provider == accounts.KELMA
-        else None
-    )
+    redownload = menu.addAction("Delete and redownload media…") if on_kelma else None
     manage = menu.addAction("Accounts and collections…")
     transfer = menu.addAction("Transfer decks between accounts…")
     chosen = menu.exec(QCursor.pos())
-    if chosen is sync:
+
+    action = picked["action"]
+    if action == "sync":
         _sync_current_account()
+    elif action == "kelma":
+        _switch_account(accounts.KELMA)
+    elif action == "ankiweb":
+        _switch_account(accounts.ANKIWEB)
     elif redownload is not None and chosen is redownload:
         _v2_delete_and_redownload_media()
     elif chosen is manage:
@@ -1647,6 +1806,11 @@ def _build_menu() -> None:
         act_sync.triggered.connect(_sync_current_account)
         menu.addAction(act_sync)
 
+        act_switch = QAction(_other_account_label(), mw)
+        act_switch.triggered.connect(_switch_to_other_account)
+        menu.addAction(act_switch)
+        menu.aboutToShow.connect(lambda: act_switch.setText(_other_account_label()))
+
         act_media_restore = QAction("Delete and redownload KelmaSync media…", mw)
         act_media_restore.triggered.connect(_v2_delete_and_redownload_media)
         menu.addAction(act_media_restore)
@@ -1782,10 +1946,11 @@ def setup() -> None:
         ("deck badges", deckbadges.setup),
         ("update check", updater.schedule_automatic_check),
     ]
-    # Kelma and unconfigured profile accounts must never fall through to native
-    # AnkiWeb auto-sync. The guard dynamically allows native sync only for a
-    # profile explicitly assigned to AnkiWeb.
+    # KelmaSync profiles must never fall through to native AnkiWeb auto-sync;
+    # every other profile is an AnkiWeb account and syncs natively.
     steps.insert(2, ("native AnkiWeb guard", _install_native_sync_guard))
+    steps.insert(1, ("Kelma profile", _ensure_kelma_profile))
+    steps.append(("profile tracking", _install_profile_tracking))
     steps.append(("old dual-sync copies", _install_legacy_copy_check))
 
     for label, fn in steps:

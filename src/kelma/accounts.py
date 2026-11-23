@@ -96,3 +96,43 @@ def set_provider(base: str | os.PathLike[str], profile: str, provider: str) -> N
 
 def collection_path(base: str | os.PathLike[str], profile: str) -> Path:
     return Path(base) / profile / "collection.anki2"
+
+
+# -- the Kelma profile and switching between providers -----------------------
+KELMA_PROFILE_NAME = "Kelma"
+ANKIWEB_PROFILE_NAME = "AnkiWeb"
+
+
+def effective_provider(records: dict[str, str], profile: str) -> str:
+    """A profile is KelmaSync only when assigned; everything else is AnkiWeb."""
+    return KELMA if records.get(profile) == KELMA else ANKIWEB
+
+
+def kelma_profile(records: dict[str, str], profiles: list[str]) -> str | None:
+    """The profile that holds the Kelma account, preferring one named "Kelma"."""
+    assigned = [profile for profile in profiles if records.get(profile) == KELMA]
+    for profile in assigned:
+        if profile.casefold() == KELMA_PROFILE_NAME.casefold():
+            return profile
+    return assigned[0] if assigned else None
+
+
+def ankiweb_profile(
+    records: dict[str, str], profiles: list[str], preferred: str | None = None
+) -> str | None:
+    """The AnkiWeb profile to switch back to: the last one used, else the first."""
+    candidates = [profile for profile in profiles if records.get(profile) != KELMA]
+    if preferred in candidates:
+        return preferred
+    return candidates[0] if candidates else None
+
+
+def unused_profile_name(profiles: list[str], base_name: str) -> str:
+    """`base_name`, or `base_name 2`, 3, … (Anki profile names ignore case)."""
+    taken = {profile.casefold() for profile in profiles}
+    if base_name.casefold() not in taken:
+        return base_name
+    number = 2
+    while f"{base_name} {number}".casefold() in taken:
+        number += 1
+    return f"{base_name} {number}"

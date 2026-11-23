@@ -156,12 +156,30 @@ def kelmasync_only() -> bool:
 
 
 def account_provider() -> str | None:
+    """KelmaSync for profiles assigned to it; every other profile is AnkiWeb."""
     if kelmasync_only():
         return accounts.KELMA
     try:
-        return accounts.provider_for(mw.pm.base, mw.pm.name)
+        return accounts.effective_provider(
+            accounts.load_registry(mw.pm.base), mw.pm.name
+        )
     except (AttributeError, TypeError):
         return None
+
+
+def get_global(key: str, default: Any = None) -> Any:
+    """A non-credential add-on setting shared by all profiles."""
+    return (mw.addonManager.getConfig(ADDON) or {}).get(key, default)
+
+
+def set_global(key: str, value: Any) -> None:
+    if key in _ACCOUNT_KEYS:
+        raise ValueError(f"{key} is a per-profile account setting")
+    cfg = dict(mw.addonManager.getConfig(ADDON) or {})
+    if cfg.get(key) == value:
+        return
+    cfg[key] = value
+    mw.addonManager.writeConfig(ADDON, cfg)
 
 
 def ui_services() -> tuple[str, ...]:

@@ -174,6 +174,10 @@ def _on_render(deck_browser, content) -> None:
     try:
         if not features.enabled("deck_badges"):
             return
+        # Badges mark Kelma-synced decks; AnkiWeb profiles keep Anki's own
+        # sync indicator (native sync never records a Kelma baseline).
+        if config.account_provider() != consts.KELMA:
+            return
         if not any(config.has_credentials(s) for s in config.ui_services()):
             return
         pending = {s: state.pending_by_did(mw.col, s) for s in config.ui_services()}
