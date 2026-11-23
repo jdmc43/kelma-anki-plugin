@@ -5,6 +5,7 @@ to. Conflicts are explicit and stop note sync.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,9 @@ from anki.collection import Collection
 from .client import V2Client, V2Conflict
 from .conflict_policy import newest_side, server_wins_anki_timestamp_truncation
 from . import anki_apply, anki_local
+from .checksum_rs import notetype_checksum
+
+_PREFETCH_CHUNK = 200
 
 
 @dataclass
@@ -29,20 +33,33 @@ class NotetypeSyncConflict(RuntimeError):
         self.conflicts = conflicts
 
 
+def _same_notetype_name(local_name: str, server_name: str) -> bool:
+    """Equal, or Anki's de-duplicated copy of it ("Basic" → "Basic-23fda").
+
+    Anki keeps notetype names unique: applying a server "Basic" next to an
+    existing local "Basic" renames it with a 5-hex suffix, which must not look
+    like a difference on every later sync.
+    """
+    return local_name == server_name or bool(
+        re.fullmatch(re.escape(server_name) + r"-[0-9a-f]{5}", local_name)
+    )
+
+
 def _canonically_equivalent_notetypes(
     local: dict[str, Any] | None,
     server: dict[str, Any] | None,
 ) -> bool:
-    """Ignore Anki's local-only stock-notetype classification metadata."""
-    if not local or not server or local.get("name") != server.get("name"):
+    """Whether two notetype records differ only in client bookkeeping."""
+    if not local or not server:
         return False
-    local_definition = dict(local.get("definition") or {})
-    server_definition = dict(server.get("definition") or {})
-    # Current Anki injects this property while decoding an older definition.
-    # It does not affect fields, templates, rendering, or scheduling and is not
-    # consistently serialized by older Anki/Kelma clients.
-    local_definition.pop("originalStockKind", None)
-    server_definition.pop("originalStockKind", None)
+    if not _same_notetype_name(str(local.get("name") or ""), str(server.get("name") or "")):
+        return False
+    # Normalise both copies the same way: Anki injects originalStockKind and
+    # recomputes req, and other clients may have stored raw ids/mod/usn.
+    local_definition = anki_local.normalize_notetype_definition(local.get("definition") or {})
+    server_definition = anki_local.normalize_notetype_definition(server.get("definition") or {})
+    local_definition.pop("name", None)
+    server_definition.pop("name", None)
     return local_definition == server_definition
 
 
@@ -72,6 +89,39 @@ def sync_notetypes_once(
 
     keys = sorted(set(local) | set(server))
     total = len(keys)
+    # Batch-fetch the server notetypes we may need (one request instead of one
+    # GET each) so equivalent copies are recognised before newest-wins would
+    # pull them again on every sync.
+    records = _prefetch_server_notetypes(client, [
+        int(key) for key in keys
+        if key in server
+        and (key not in local or local[key].get("checksum") != server[key].get("checksum"))
+    ])
+
+    def same(key: str) -> bool:
+        l, s = local.get(key), server.get(key)
+        if not l or not s:
+            return False
+        if l.get("checksum") == s.get("checksum"):
+            return True
+        record = records.get(int(key))
+        if record is None:
+            return False
+        name = str(record.get("name") or "")
+        if notetype_checksum(
+            name, anki_local.normalize_notetype_definition(record.get("definition") or {})
+        ) == l.get("checksum"):
+            return True
+        return _canonically_equivalent_notetypes(
+            anki_local.notetype_record(col, int(key)), record
+        )
+
+    def pull(ntid: int) -> None:
+        record = records.get(ntid)
+        if record is not None:
+            anki_apply.apply_notetype(col, record)
+        else:
+            anki_apply.apply_server_notetype(col, client, ntid)
     if progress:
         progress(f"Notetypes: syncing {total} notetypes…")
     for idx, key in enumerate(keys, 1):
@@ -84,15 +134,15 @@ def sync_notetypes_once(
             # A fresh Anki collection ships unused stock notetypes. They are
             # scaffolding, not local edits: restore every server notetype and
             # leave local-only stock definitions unpublished.
-            if s and l and l.get("checksum") == s.get("checksum"):
+            if s and l and same(key):
                 result.skipped += 1
             elif s and apply_pulls:
-                anki_apply.apply_server_notetype(col, client, ntid)
+                pull(ntid)
                 result.pulled += 1
             else:
                 result.skipped += 1
             continue
-        if l and s and l.get("checksum") == s.get("checksum"):
+        if l and s and same(key):
             result.skipped += 1
             continue
         if l and not s:
@@ -101,7 +151,7 @@ def sync_notetypes_once(
             continue
         if s and not l:
             if apply_pulls:
-                anki_apply.apply_server_notetype(col, client, ntid)
+                pull(ntid)
                 result.pulled += 1
             else:
                 result.skipped += 1
@@ -116,7 +166,7 @@ def sync_notetypes_once(
             )
             if winner is None:
                 local_record = anki_local.notetype_record(col, ntid)
-                server_record = client.get_notetype(ntid)
+                server_record = records.get(ntid) or client.get_notetype(ntid)
                 if _canonically_equivalent_notetypes(local_record, server_record):
                     result.skipped += 1
                     continue
@@ -126,7 +176,7 @@ def sync_notetypes_once(
                 ):
                     winner = "server"
             if winner == "server" and apply_pulls:
-                anki_apply.apply_server_notetype(col, client, ntid)
+                pull(ntid)
                 result.pulled += 1
             elif winner == "server":
                 result.skipped += 1
@@ -152,6 +202,21 @@ def sync_notetypes_once(
     if progress:
         progress(f"Notetypes complete: pushed {result.pushed}, pulled {result.pulled}, skipped {result.skipped}")
     return result
+
+
+def _prefetch_server_notetypes(client: V2Client, ids: list[int]) -> dict[int, dict[str, Any]]:
+    records: dict[int, dict[str, Any]] = {}
+    for start in range(0, len(ids), _PREFETCH_CHUNK):
+        try:
+            response = client.batch_pull(notetypes=ids[start:start + _PREFETCH_CHUNK]) or {}
+        except Exception:  # noqa: BLE001 - fall back to per-notetype requests
+            return records
+        for record in response.get("notetypes", []) or []:
+            try:
+                records[int(record.get("notetype_id"))] = record
+            except (TypeError, ValueError):
+                continue
+    return records
 
 
 def force_local_notetype(col: Collection, client: V2Client, notetype_id: int) -> dict[str, Any]:

@@ -57,6 +57,7 @@ def apply_card(
     apply_study_state: bool = True,
     apply_schedule_reset: bool = False,
     apply_due_date_override: bool = False,
+    day_mapper=None,
 ) -> int:
     """Apply a server card to an existing local card.
 
@@ -65,7 +66,9 @@ def apply_card(
     resolved by logical identity (note_guid, ord) when available, because
     card_id is a local creation timestamp and differs across collections.
     Day-based scheduling (`due`/`odue`) is shifted from the writing collection's
-    creation-day scale to this collection's, using the `_crt` tag.
+    creation-day scale to this collection's, using the `_crt` tag. A server FSRS
+    projection is instead placed on the account's study days by `day_mapper`
+    (see study_days.py), which is what Kelma Review does.
     """
     sched = dict(record.get("scheduling") or {})
     note_guid = record.get("note_guid") or ""
@@ -101,13 +104,17 @@ def apply_card(
         due = int(sched.get("due", 0) or 0)
         odue = int(sched.get("odue", 0) or 0)
         odid = int(sched.get("odid", 0) or 0)
-        writer_crt = int(sched.get("_crt", 0) or 0)
-        if writer_crt:
-            day_shift = (writer_crt // 86400) - (int(col.crt) // 86400)
-            if queue in (2, 3):
-                due += day_shift
-                if odid != 0:
-                    odue += day_shift
+        aligned = day_mapper.anki_due(sched) if day_mapper is not None else None
+        if aligned is not None:
+            queue, due = aligned
+        else:
+            writer_crt = int(sched.get("_crt", 0) or 0)
+            if writer_crt:
+                day_shift = (writer_crt // 86400) - (int(col.crt) // 86400)
+                if queue in (2, 3):
+                    due += day_shift
+                    if odid != 0:
+                        odue += day_shift
         fields = {
             "type": int(sched.get("type", 0) or 0),
             "queue": queue,

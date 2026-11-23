@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 from anki.collection import Collection
 
 from .client import V2Client
+from . import manifest_cache, schedule_alignment, scheduler_settings
+from .study_days import StudyDayMapper
 from .card_sync import CardSyncConflict, CardSyncResult, sync_cards_once
 from .deck_sync import DeckSyncConflict, DeckSyncResult, sync_decks_once
 from .media_sync import MediaSyncResult, sync_media_once
@@ -28,6 +31,7 @@ class ContentSyncResult:
     reviews: ReviewSyncResult = None  # type: ignore[assignment]
     media: MediaSyncResult = None  # type: ignore[assignment]
     server_time: str = ""
+    realigned: int = 0
 
 
 class ContentSyncConflict(RuntimeError):
@@ -288,6 +292,45 @@ def _limit_deletes_to_scoped_server(
     }
 
 
+def _study_day_mapper(col: Collection, client: V2Client, progress=None):
+    """Map the account's study days onto Anki's days; None if unavailable."""
+    try:
+        policy = client.study_day_policy()
+    except Exception:  # noqa: BLE001 - older servers: keep the previous mapping
+        return None
+    if not isinstance(policy, dict) or not policy.get("timezone_id"):
+        return None
+    hour = int(policy.get("day_start_hour", 4) or 0)
+    if col.get_config("rollover", 4) != hour:
+        # Anki's "next day starts at" follows the account, as in Kelma Review.
+        col.set_config("rollover", hour)
+        if progress:
+            progress(f"Study days: Anki's day now starts at {hour}:00, like your Kelma account")
+    return StudyDayMapper(policy, col.sched.today, int(time.time() * 1000))
+
+
+def _wait_for_projections(client: V2Client, progress=None, timeout: float = 20.0) -> bool:
+    """Wait until the server has scheduled every uploaded review (FSRS)."""
+    deadline = time.time() + timeout
+    announced = False
+    while True:
+        try:
+            counts = (client.scheduler_profile() or {}).get("projections") or {}
+        except Exception:  # noqa: BLE001 - the next sync will pick the schedules up
+            return False
+        waiting = int(counts.get("pending", 0) or 0) + int(counts.get("running", 0) or 0)
+        if waiting == 0:
+            return True
+        if time.time() >= deadline:
+            if progress:
+                progress("Scheduling: still running on KelmaSync; the next sync will pick it up")
+            return False
+        if progress and not announced:
+            progress(f"Scheduling: waiting for KelmaSync to schedule {waiting} reviewed card(s)…")
+            announced = True
+        time.sleep(0.5)
+
+
 def sync_content_once(
     col: Collection,
     client: V2Client,
@@ -311,12 +354,11 @@ def sync_content_once(
       4. save new snapshot
     """
     if progress:
-        progress("Phase 1/10: fetching full server manifest for checksum comparison…")
-    # IMPORTANT: checksum planning requires a full server manifest. If we pass
-    # `since`, unchanged server rows are omitted and look local-only, causing
-    # needless re-sends even when checksums match. Incremental sync can only be
-    # reintroduced after the local snapshot stores checksums per resource.
-    manifest = client.manifest()
+        progress("Phase 1/10: loading the server manifest…")
+    # Checksum planning needs a full server manifest. The cache keeps the last
+    # one and merges what changed since (`since` delta), which is the same as
+    # a fresh full manifest at a fraction of the server's cost.
+    manifest = manifest_cache.fetch(col, client, progress=progress)
     if deck_name and not deck_names:
         deck_names = [deck_name]
     if deck_names is not None:
@@ -459,7 +501,7 @@ def sync_content_once(
         _push_local_deletes(col, client, local_deletes, progress=progress)
         if progress:
             progress("Deletes changed server state; refreshing manifest…")
-        manifest = client.manifest()
+        manifest = manifest_cache.refresh(client, manifest)
         if deck_names is not None:
             manifest = _scope_server_manifest_to_decks(client, manifest, deck_names, progress=progress)
     elif progress:
@@ -517,6 +559,19 @@ def sync_content_once(
         raise ContentSyncConflict("note", e.conflicts) from e
     if progress:
         progress("Phase 9/10: syncing cards…")
+    day_mapper = (
+        _study_day_mapper(col, client, progress=progress)
+        if scheduling_mode != "local_anki"
+        else None
+    )
+    if day_mapper is not None:
+        try:
+            if scheduler_settings.apply_profile(col, client.scheduler_profile()):
+                if progress:
+                    progress("Scheduling: Anki now uses your Kelma FSRS settings")
+        except Exception as err:  # noqa: BLE001 - settings are a convenience
+            if progress:
+                progress(f"Scheduling: could not read the Kelma FSRS settings ({err})")
     try:
         result.cards = sync_cards_once(
             col,
@@ -529,9 +584,21 @@ def sync_content_once(
             accept_server_timestamp_truncation=accept_server_timestamp_truncation,
             server_authoritative_keys=server_authoritative_card_keys,
             scheduling_mode=scheduling_mode,
+            day_mapper=day_mapper,
         )
     except CardSyncConflict as e:
         raise ContentSyncConflict("card", e.conflicts) from e
+    if day_mapper is not None and col.get_config(
+        schedule_alignment.CONFIG_KEY, ""
+    ) != day_mapper.key:
+        if progress:
+            progress("Study days: placing due dates on your study days (one time)…")
+        result.realigned = schedule_alignment.realign_projected_cards(
+            col, client, manifest, day_mapper, progress=progress
+        )
+        col.set_config(schedule_alignment.CONFIG_KEY, day_mapper.key)
+        if progress:
+            progress(f"Study days: moved {result.realigned} due date(s) to match Kelma Review")
     try:
         if progress:
             progress("Phase 10/10: syncing full review history and daily limits…")
@@ -545,6 +612,28 @@ def sync_content_once(
         )
     except ReviewSyncConflict as e:
         raise ContentSyncConflict("review history", e.conflicts) from e
+    if day_mapper is not None and result.reviews.pushed:
+        # Reviews done here get their FSRS schedule from the server, as on
+        # every other Kelma client. Wait for it and take it in this sync, so
+        # Anki shows the same due dates as Kelma Review right away.
+        if _wait_for_projections(client, progress=progress):
+            manifest = manifest_cache.refresh(client, manifest)
+            try:
+                rescheduled = sync_cards_once(
+                    col,
+                    client,
+                    manifest,
+                    progress=progress,
+                    deck_names=deck_names,
+                    newest_wins=newest_wins,
+                    accept_server_timestamp_truncation=accept_server_timestamp_truncation,
+                    scheduling_mode=scheduling_mode,
+                    day_mapper=day_mapper,
+                )
+            except CardSyncConflict as e:
+                raise ContentSyncConflict("card", e.conflicts) from e
+            result.cards.pulled += rescheduled.pulled
+            result.cards.pushed += rescheduled.pushed
     if progress:
         progress("Final phase: syncing media…")
     result.media = sync_media_once(
@@ -589,7 +678,8 @@ def sync_content_once(
     }
     if progress:
         progress("Saving sync snapshot…")
-    final_server_manifest = client.manifest()
+    # What this pass wrote (and anything else that changed meanwhile).
+    final_server_manifest = manifest_cache.refresh(client, manifest)
     if deck_names is not None:
         final_server_manifest = _scope_server_manifest_to_decks(
             client, final_server_manifest, deck_names, progress=progress
@@ -635,6 +725,8 @@ def sync_content_once(
         completed_at=final_server_manifest.get("server_time", ""),
     )
     sync_state.save_state(col, new_state)
+    if deck_names is None:
+        manifest_cache.save(col, client, final_server_manifest)
 
     if progress:
         progress("Sync complete.")

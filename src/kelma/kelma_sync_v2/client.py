@@ -8,11 +8,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import gzip
+import http.client
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Optional
+
+# Persistent HTTP(S) connections, one per thread and server. Opening a TLS
+# connection costs about as much as a small request, and a sync makes dozens.
+_connections = threading.local()
+# Raised when a kept-alive connection was closed by the server before it read
+# the request; the request is then sent once more on a fresh connection.
+_STALE_CONNECTION_ERRORS = (
+    http.client.RemoteDisconnected,
+    http.client.CannotSendRequest,
+    http.client.BadStatusLine,
+    ConnectionResetError,
+    BrokenPipeError,
+)
 
 
 class V2Error(RuntimeError):
@@ -74,6 +89,14 @@ class V2Client:
         if since:
             path += "?" + urllib.parse.urlencode({"since": since})
         return self._json("GET", path, None)
+
+    def study_day_policy(self) -> dict[str, Any]:
+        """The account's study-day policy (time zone, day-start hour)."""
+        return self._json("GET", "/v2/study-day-policy", None) or {}
+
+    def scheduler_profile(self) -> dict[str, Any]:
+        """The account FSRS profile and the server projection queue counts."""
+        return self._json("GET", "/v2/scheduler-profile", None) or {}
 
     def usage(self) -> dict[str, int]:
         """Return exact account-wide bytes currently stored by KelmaSync."""
@@ -363,6 +386,25 @@ class V2Client:
         if force:
             headers["Force-Override"] = "true"
 
+        if self._can_keep_alive():
+            status, response_headers, raw = self._keep_alive_request(
+                method, path, data, headers, timeout or self.timeout
+            )
+            if response_headers.get("content-encoding", "").lower() == "gzip":
+                raw = gzip.decompress(raw)
+            if 200 <= status < 300:
+                return raw
+            payload: Any = None
+            if raw:
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    payload = raw.decode("utf-8", errors="replace")
+            if status == 409 and isinstance(payload, dict):
+                raise V2Conflict(payload)
+            message = payload.get("message") if isinstance(payload, dict) else str(payload or status)
+            raise V2Error(status, message, payload)
+
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout or self.timeout) as resp:
@@ -386,6 +428,68 @@ class V2Client:
             raise V2Error(err.code, message, payload) from err
         except urllib.error.URLError as err:
             raise V2Error(0, "connection failed") from err
+
+    def _can_keep_alive(self) -> bool:
+        """Persistent connections, unless a proxy applies (urllib handles those)."""
+        parts = urllib.parse.urlsplit(self.endpoint)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return False
+        proxies = urllib.request.getproxies()
+        if parts.scheme in proxies or "all" in proxies:
+            return bool(urllib.request.proxy_bypass(parts.hostname))
+        return True
+
+    def _keep_alive_request(
+        self,
+        method: str,
+        path: str,
+        data: bytes | None,
+        headers: dict[str, str],
+        timeout: int,
+    ) -> tuple[int, dict[str, str], bytes]:
+        parts = urllib.parse.urlsplit(self.endpoint)
+        key = (parts.scheme, parts.hostname, parts.port)
+        pool = getattr(_connections, "pool", None)
+        if pool is None:
+            pool = _connections.pool = {}
+        target = (parts.path.rstrip("/") or "") + path
+        for attempt in range(2):
+            connection = pool.get(key)
+            reused = connection is not None
+            if connection is None:
+                factory = (
+                    http.client.HTTPSConnection
+                    if parts.scheme == "https"
+                    else http.client.HTTPConnection
+                )
+                connection = factory(parts.hostname, parts.port, timeout=timeout)
+                pool[key] = connection
+            connection.timeout = timeout
+            if connection.sock is not None:
+                connection.sock.settimeout(timeout)
+            try:
+                connection.request(method, target, body=data, headers=headers)
+                response = connection.getresponse()
+                raw = response.read()
+            except _STALE_CONNECTION_ERRORS as err:
+                connection.close()
+                pool.pop(key, None)
+                if reused and attempt == 0:
+                    continue
+                raise V2Error(0, "connection failed") from err
+            except (OSError, http.client.HTTPException) as err:
+                connection.close()
+                pool.pop(key, None)
+                raise V2Error(0, "connection failed") from err
+            if response.will_close:
+                connection.close()
+                pool.pop(key, None)
+            return (
+                response.status,
+                {name.lower(): value for name, value in response.getheaders()},
+                raw,
+            )
+        raise V2Error(0, "connection failed")
 
     def _open_stream(self, method: str, path: str, *, timeout: int):
         headers = {
