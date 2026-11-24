@@ -47,6 +47,7 @@ from aqt.qt import (
 from aqt.utils import tooltip, askUser
 
 from . import accounts, branding, config, consts, deckbadges, features, legacy_copies, paths, state, updater
+from .kelma_sync_v2 import kelma_queue
 
 _orig_sync = None
 _V2_ACTIVE_ACTION: str | None = None
@@ -1176,7 +1177,7 @@ class V2SyncProgressDialog(QDialog):
         layout.addWidget(self.log)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         self.close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
-        self.close_btn.setEnabled(False)
+        # Closing only hides the details; the work carries on in the background.
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._line.connect(self._append_line)
@@ -1324,6 +1325,25 @@ def _remember_ankiweb_profile() -> None:
         config.set_global("last_ankiweb_profile", mw.pm.name)
 
 
+def _apply_kelma_queue_rules() -> None:
+    """Today's counts as Kelma Review shows them, in KelmaSync profiles."""
+    if mw.col is None or _V2_ACTIVE_ACTION or _current_account_provider() != accounts.KELMA:
+        return
+    try:
+        if kelma_queue.apply(mw.col) and mw.state == "deckBrowser":
+            mw.deckBrowser.refresh()
+    except Exception as err:  # noqa: BLE001 - counts are a convenience
+        print(f"Kelma daily limits: {err}")
+
+
+def _install_kelma_queue_rules() -> None:
+    gui_hooks.profile_did_open.append(_apply_kelma_queue_rules)
+    day_changed = getattr(gui_hooks, "day_did_change", None)
+    if day_changed is not None:
+        day_changed.append(_apply_kelma_queue_rules)
+    _apply_kelma_queue_rules()
+
+
 def _install_profile_tracking() -> None:
     gui_hooks.profile_did_open.append(_remember_ankiweb_profile)
     _remember_ankiweb_profile()
@@ -1393,6 +1413,9 @@ def _toggle_button(text: str, provider: str, checked: bool, side: str) -> QPushB
 
 def _v2_sync_menu() -> None:
     """The Sync button: an AnkiWeb / Kelma account toggle and one Sync action."""
+    if _V2_ACTIVE_ACTION == "sync":
+        _show_sync_details()  # clicking Sync while it runs shows the details
+        return
     if _V2_ACTIVE_ACTION:
         tooltip(_v2_active_message() or "A sync operation is already running.")
         return
@@ -1473,6 +1496,7 @@ def _v2_sync_menu() -> None:
     panel_action.setDefaultWidget(panel)
     menu.addAction(panel_action)
     menu.addSeparator()
+    details = menu.addAction("Last sync details…") if on_kelma and _SYNC_DIALOG is not None else None
     redownload = menu.addAction("Delete and redownload media…") if on_kelma else None
     manage = menu.addAction("Accounts and collections…")
     transfer = menu.addAction("Transfer decks between accounts…")
@@ -1485,6 +1509,8 @@ def _v2_sync_menu() -> None:
         _switch_account(accounts.KELMA)
     elif action == "ankiweb":
         _switch_account(accounts.ANKIWEB)
+    elif details is not None and chosen is details:
+        _show_sync_details()
     elif redownload is not None and chosen is redownload:
         _v2_delete_and_redownload_media()
     elif chosen is manage:
@@ -1661,15 +1687,69 @@ def _v2_delete_and_restore_from_server() -> None:
     mw.taskman.run_in_background(reset_work, reset_done, uses_collection=True)
 
 
+_SYNC_DIALOG = None  # details of the current/last background sync
+
+
+def _set_sync_spinner(active: bool) -> None:
+    try:
+        mw.toolbar.set_sync_active(active)
+    except Exception:  # noqa: BLE001 - toolbar not ready
+        pass
+
+
+def _keep_spinner_after_redraw(toolbar) -> None:
+    # A toolbar redraw resets the icon from Anki's own media sync state.
+    if _V2_ACTIVE_ACTION == "sync":
+        try:
+            toolbar.set_sync_active(True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _show_sync_details() -> None:
+    if _SYNC_DIALOG is None:
+        tooltip("No Kelma sync has run in this session yet.")
+        return
+    _SYNC_DIALOG.show()
+    _SYNC_DIALOG.raise_()
+    _SYNC_DIALOG.activateWindow()
+
+
+def _sync_summary(result) -> str:
+    moved = sum(
+        int(getattr(part, attr, 0) or 0)
+        for part in (result.notes, result.cards, result.reviews)
+        for attr in ("pushed", "pulled")
+    ) + int(result.media.uploaded or 0) + int(result.media.downloaded or 0)
+    if not moved:
+        return "Kelma: up to date"
+    pieces = []
+    for label, part in (("card", result.cards), ("note", result.notes), ("review", result.reviews)):
+        count = int(part.pushed or 0) + int(part.pulled or 0)
+        if count:
+            pieces.append(f"{count} {label}{'' if count == 1 else 's'}")
+    media = int(result.media.uploaded or 0) + int(result.media.downloaded or 0)
+    if media:
+        pieces.append(f"{media} media file{'' if media == 1 else 's'}")
+    return "Kelma synced: " + ", ".join(pieces)
+
+
 def _v2_sync_kelma() -> None:
-    """Two-way sync of the current profile's collection with KelmaSync."""
-    global _V2_ACTIVE_ACTION
+    """Two-way sync of the current profile's collection with KelmaSync.
+
+    Runs in the background: the toolbar's sync icon spins and a short note
+    reports the result. Clicking Sync while it runs shows the details.
+    """
+    global _V2_ACTIVE_ACTION, _SYNC_DIALOG
     if not config.kelmasync_only() and _current_account_provider() != accounts.KELMA:
         tooltip("This collection is not assigned to a KelmaSync account.")
         return
     blocked = _v2_active_message()
     if blocked:
-        tooltip(f"KelmaSync: {blocked}")
+        if _V2_ACTIVE_ACTION == "sync":
+            _show_sync_details()
+        else:
+            tooltip(f"KelmaSync: {blocked}")
         return
     client = _v2_client_or_login()
     if client is None:
@@ -1683,16 +1763,23 @@ def _v2_sync_kelma() -> None:
     cfg = config.get()
     since = cfg.get("v2_last_server_time") or None
     _V2_ACTIVE_ACTION = "sync"
-    dlg = V2SyncProgressDialog(mw)
-    dlg.show()
-    dlg.progress(
-        "Local ↔ KelmaSync queued for all decks. "
-        "Waiting for the Anki collection worker…"
-    )
-    tooltip("KelmaSync: syncing local collection… progress window opened.")
+    if _SYNC_DIALOG is not None:
+        _SYNC_DIALOG.close()
+    dlg = _SYNC_DIALOG = V2SyncProgressDialog(mw)
+    dlg.setWindowTitle("Kelma sync details")
+    dlg.progress("Local ↔ KelmaSync queued for all decks.")
+    _set_sync_spinner(True)
+
+    def finish(message: str, ok: bool, note: str | None = None) -> None:
+        global _V2_ACTIVE_ACTION
+        if _V2_ACTIVE_ACTION == "sync":
+            _V2_ACTIVE_ACTION = None
+        _set_sync_spinner(False)
+        dlg.complete(message, ok=ok)
+        if note:
+            tooltip(note, period=4000 if ok else 8000)
 
     def _work():
-        dlg.progress("Worker started.")
         return sync_content_once(
             mw.col,
             client,
@@ -1706,40 +1793,34 @@ def _v2_sync_kelma() -> None:
         )
 
     def _done(future: Future) -> None:
-        global _V2_ACTIVE_ACTION
         try:
             result = future.result()
         except DeletionSafetyError as safety:
-            if _V2_ACTIVE_ACTION == "sync":
-                _V2_ACTIVE_ACTION = None
-            dlg.complete(
+            finish(
                 f"KelmaSync deletion protection stopped the sync: {safety}. "
                 "If the deletions are intentional, open Kelma → KelmaSync login/server "
                 "and approve large deletions for one sync.",
                 ok=False,
             )
-            tooltip("KelmaSync blocked a large server deletion. Review deletion protection.")
+            _show_sync_details()  # needs a decision
             return
         except ContentSyncConflict as conflict:
             msg = f"{len(conflict.conflicts)} {conflict.resource} conflict(s). Choose which source wins."
-            if _V2_ACTIVE_ACTION == "sync":
-                _V2_ACTIVE_ACTION = None
-            dlg.progress(msg)
-            tooltip(f"KelmaSync: {msg}")
+            finish(msg, ok=False)
             V2FullDiffDialog(mw, reconcile_mode=True).exec()
-            dlg.complete("Conflict review finished. Run sync once more to verify convergence.", ok=True)
+            dlg.progress("Conflict review finished. Run sync once more to verify convergence.")
             return
         except Exception as err:  # noqa: BLE001
-            if _V2_ACTIVE_ACTION == "sync":
-                _V2_ACTIVE_ACTION = None
             # Even on failure, pulled data is in the collection. Update the
             # badge baseline so it doesn't show as +N pending.
             try:
                 _mark_service_synced_for_badges(consts.KELMA)
             except Exception:  # noqa: BLE001
                 pass
-            dlg.complete(f"KelmaSync failed: {err}", ok=False)
-            tooltip(f"KelmaSync v2 sync failed: {err}")
+            finish(
+                f"KelmaSync failed: {err}", ok=False,
+                note=f"Kelma sync failed: {err}. Click Sync for details.",
+            )
             return
         cfg2 = config.get()
         cfg2["v2_last_server_time"] = result.server_time
@@ -1757,16 +1838,12 @@ def _v2_sync_kelma() -> None:
             f"daily limits {result.reviews.study_days_pushed}/{result.reviews.study_days_applied}, "
             f"media {result.media.uploaded}/{result.media.downloaded}."
         )
-        if _V2_ACTIVE_ACTION == "sync":
-            _V2_ACTIVE_ACTION = None
-        dlg.complete(msg, ok=True)
-        tooltip(f"KelmaSync complete: {msg}")
+        finish(msg, ok=True, note=_sync_summary(result))
 
     try:
         mw.taskman.run_in_background(_work, _done, uses_collection=True)
     except Exception as err:  # noqa: BLE001
-        _V2_ACTIVE_ACTION = None
-        dlg.complete(f"Could not start KelmaSync sync: {err}", ok=False)
+        finish(f"Could not start KelmaSync sync: {err}", ok=False, note=f"Kelma sync could not start: {err}")
 
 
 # -----------------------------------------------------------------------------
@@ -1951,6 +2028,8 @@ def setup() -> None:
     steps.insert(2, ("native AnkiWeb guard", _install_native_sync_guard))
     steps.insert(1, ("Kelma profile", _ensure_kelma_profile))
     steps.append(("profile tracking", _install_profile_tracking))
+    steps.append(("Kelma daily limits", _install_kelma_queue_rules))
+    steps.append(("sync spinner", lambda: gui_hooks.top_toolbar_did_redraw.append(_keep_spinner_after_redraw)))
     steps.append(("old dual-sync copies", _install_legacy_copy_check))
 
     for label, fn in steps:

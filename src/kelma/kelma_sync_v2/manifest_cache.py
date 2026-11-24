@@ -141,6 +141,8 @@ def fetch(col, client, *, progress=None) -> dict[str, Any]:
             merged = merge(cached["manifest"], delta)
             merged["_kelma_full_at"] = cached.get("full_at", 0)
             merged["_kelma_changes"] = _changes(delta)
+            equivalent = cached.get("equivalent")
+            merged["_kelma_equivalent"] = equivalent if isinstance(equivalent, dict) else {}
             if progress:
                 progress(f"Server manifest: {merged['_kelma_changes']} change(s) since the last sync")
             return merged
@@ -175,6 +177,7 @@ def save(col, client, manifest: dict[str, Any]) -> None:
         "version": CACHE_VERSION,
         **_identity(client),
         "full_at": manifest.get("_kelma_full_at", 0),
+        "equivalent": manifest.get("_kelma_equivalent") or {},
         "manifest": {key: value for key, value in manifest.items() if not key.startswith("_kelma")},
     }
     path = _path(col)

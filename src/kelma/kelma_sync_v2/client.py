@@ -402,8 +402,8 @@ class V2Client:
                     payload = raw.decode("utf-8", errors="replace")
             if status == 409 and isinstance(payload, dict):
                 raise V2Conflict(payload)
-            message = payload.get("message") if isinstance(payload, dict) else str(payload or status)
-            raise V2Error(status, message, payload)
+            message = payload.get("message") if isinstance(payload, dict) else str(payload or "")
+            raise V2Error(status, message or f"the server answered {status}", payload)
 
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
