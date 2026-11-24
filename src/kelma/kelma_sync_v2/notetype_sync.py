@@ -74,6 +74,7 @@ def sync_notetypes_once(
     prefer_server: bool = False,
     newest_wins: bool = False,
     accept_server_timestamp_truncation: bool = False,
+    equivalent: dict[str, list[str]] | None = None,
 ) -> NotetypeSyncResult:
     if progress:
         progress("Notetypes: building local notetype manifest…")
@@ -92,10 +93,16 @@ def sync_notetypes_once(
     # Batch-fetch the server notetypes we may need (one request instead of one
     # GET each) so equivalent copies are recognised before newest-wins would
     # pull them again on every sync.
+    known = equivalent if equivalent is not None else {}
+
+    def pair(key: str) -> list[str]:
+        return [str(local[key].get("checksum") or ""), str(server[key].get("checksum") or "")]
+
     records = _prefetch_server_notetypes(client, [
         int(key) for key in keys
         if key in server
         and (key not in local or local[key].get("checksum") != server[key].get("checksum"))
+        and not (key in local and known.get(key) == pair(key))
     ])
 
     def same(key: str) -> bool:
@@ -104,17 +111,21 @@ def sync_notetypes_once(
             return False
         if l.get("checksum") == s.get("checksum"):
             return True
+        if known.get(key) == pair(key):
+            return True
         record = records.get(int(key))
         if record is None:
             return False
         name = str(record.get("name") or "")
         if notetype_checksum(
             name, anki_local.normalize_notetype_definition(record.get("definition") or {})
-        ) == l.get("checksum"):
-            return True
-        return _canonically_equivalent_notetypes(
+        ) == l.get("checksum") or _canonically_equivalent_notetypes(
             anki_local.notetype_record(col, int(key)), record
-        )
+        ):
+            known[key] = pair(key)
+            return True
+        known.pop(key, None)
+        return False
 
     def pull(ntid: int) -> None:
         record = records.get(ntid)

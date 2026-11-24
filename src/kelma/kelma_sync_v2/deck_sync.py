@@ -36,6 +36,7 @@ def sync_decks_once(
     prefer_server: bool = False,
     newest_wins: bool = False,
     accept_server_timestamp_truncation: bool = False,
+    equivalent: dict[str, list[str]] | None = None,
 ) -> DeckSyncResult:
     if progress:
         progress("Decks: building local deck manifest…")
@@ -51,10 +52,16 @@ def sync_decks_once(
     # store a config another client serialised differently (null vs absent
     # keys, Anki's daily bookkeeping), which would otherwise be pulled again
     # on every sync without ever converging.
+    known = equivalent if equivalent is not None else {}
+
+    def pair(name: str) -> list[str]:
+        return [str(local[name].get("checksum") or ""), str(server[name].get("checksum") or "")]
+
     records = _prefetch_server_decks(client, [
         name for name in names
         if name in server
         and (name not in local or local[name].get("checksum") != server[name].get("checksum"))
+        and not (name in local and known.get(name) == pair(name))
     ])
 
     def same(name: str) -> bool:
@@ -63,14 +70,18 @@ def sync_decks_once(
             return False
         if l.get("checksum") == s.get("checksum"):
             return True
+        if known.get(name) == pair(name):
+            return True
         record = records.get(name)
         if record is None:
             return False
         if deck_checksum(
             anki_local.normalize_deck_config(record.get("config") or {})
-        ) == l.get("checksum"):
+        ) == l.get("checksum") or _applying_changes_nothing(col, name, record.get("config") or {}):
+            known[name] = pair(name)
             return True
-        return _applying_changes_nothing(col, name, record.get("config") or {})
+        known.pop(name, None)
+        return False
 
     def pull(name: str) -> None:
         record = records.get(name)
