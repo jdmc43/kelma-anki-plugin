@@ -82,23 +82,25 @@ The add-on checks kelma.tech for updates and asks before installing one
     <td width="50%" valign="top">
       <img src="docs/images/screenshots/sign-in.png" alt="Sign in to your Kelma account: email and password fields, links to create a free account or reset the password">
     </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/screenshots/sync-details.png" alt="Kelma sync details: a timed log of a 3.6-second sync that uploaded 41 reviews and pulled their new due dates">
+    <td width="50%" valign="middle">
+      <b>Sign in once</b> with the same email and password you use for Kelma
+      Review and kelma.tech. Your password is never stored; the add-on keeps
+      only a sign-in token inside the Kelma profile.
+      <br><br>
+      No account yet? <a href="https://kelma.tech/signup">Create one for free at kelma.tech</a>.
     </td>
   </tr>
   <tr>
-    <td valign="top">
-      <b>Sign in once</b> with the same email and password you use for Kelma
-      Review and kelma.tech. Your password is never stored.
-    </td>
-    <td valign="top">
+    <td colspan="2" align="center">
+      <img src="docs/images/screenshots/sync-details.png" width="85%" alt="Kelma sync details: a timed log of a 3.6-second sync that uploaded 41 reviews and pulled their new due dates">
+      <br>
       <b>Syncs in the background.</b> Anki's sync icon spins and a short note
       reports what changed. Click <b>Sync</b> while it runs to see the full log.
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center">
-      <img src="docs/images/screenshots/accounts.png" width="70%" alt="Cloud accounts: the Kelma profile assigned to KelmaSync and User 1 assigned to AnkiWeb">
+      <img src="docs/images/screenshots/accounts.png" width="75%" alt="Cloud accounts: the Kelma profile assigned to KelmaSync and User 1 assigned to AnkiWeb">
       <br>
       <b>Accounts and collections.</b> Every Anki profile belongs to exactly one
       cloud. Reassign profiles or move decks between them explicitly.
