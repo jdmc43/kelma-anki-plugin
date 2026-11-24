@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from typing import Any
 
 from anki.collection import Collection
@@ -102,14 +103,34 @@ def _record_checksum(record: dict[str, Any]) -> str:
 
 
 def local_review_records(
-    col: Collection, deck_names: list[str] | None = None
+    col: Collection, deck_names: list[str] | None = None, *, checksums: bool = True
 ) -> dict[int, dict[str, Any]]:
     records: dict[int, dict[str, Any]] = {}
     for row in _review_rows(col, deck_names=deck_names):
         record = _row_record(row)
-        record["checksum"] = _record_checksum(record)
+        if checksums:
+            record["checksum"] = _record_checksum(record)
         records[record["review_id"]] = record
     return records
+
+
+VERIFIED_CONFIG_KEY = "kelmaReviewsVerified"
+
+
+def _verified_through(col: Collection, client: V2Client) -> tuple[str, int]:
+    """Highest review id already verified against this sign-in's server."""
+    token = str(getattr(client, "token", "") or "")
+    account = (
+        f"{getattr(client, 'endpoint', '')}|"
+        f"{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"
+    )
+    try:
+        stored = col.get_config(VERIFIED_CONFIG_KEY, None)
+    except Exception:  # noqa: BLE001 - test doubles without a config store
+        return account, 0
+    if isinstance(stored, dict) and stored.get("account") == account:
+        return account, int(stored.get("through", 0) or 0)
+    return account, 0
 
 
 def _review_card_map(col: Collection) -> tuple[dict[tuple[str, int], int], set[int]]:
@@ -284,7 +305,10 @@ def sync_reviews_once(
 
     if progress:
         progress("Reviews: building local append-only history manifest…")
-    local = local_review_records(col, deck_names=deck_names)
+    # Review rows are immutable: once a row has been checked against the
+    # server's checksum it stays equal, so only newer shared rows are hashed.
+    local = local_review_records(col, deck_names=deck_names, checksums=False)
+    account, verified_through = _verified_through(col, client) if deck_names is None else ("", 0)
     server = {
         int(item.get("review_id", 0) or 0): item
         for item in server_manifest.get("reviews", [])
@@ -293,6 +317,11 @@ def sync_reviews_once(
 
     shared = sorted(set(local) & set(server))
     for review_id in shared:
+        if review_id <= verified_through:
+            result.skipped += 1
+            continue
+        if "checksum" not in local[review_id]:
+            local[review_id]["checksum"] = _record_checksum(local[review_id])
         server_checksum = str(server[review_id].get("checksum") or "")
         # Anki keeps revlog rows after card deletion. Such an orphan no longer
         # has a local GUID, so it cannot reproduce the portable checksum; the
@@ -312,6 +341,11 @@ def sync_reviews_once(
             result.skipped += 1
     if result.conflicts:
         raise ReviewSyncConflict(result.conflicts)
+    if account and shared and shared[-1] > verified_through:
+        try:
+            col.set_config(VERIFIED_CONFIG_KEY, {"account": account, "through": shared[-1]})
+        except Exception:  # noqa: BLE001 - verifying again next time is harmless
+            pass
 
     pull_ids = sorted(set(server) - set(local))
     if pull_ids and progress:

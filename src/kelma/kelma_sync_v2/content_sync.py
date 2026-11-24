@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import time
 from typing import Any
 
 from anki.collection import Collection
 
 from .client import V2Client
-from . import manifest_cache, schedule_alignment, scheduler_settings
+from . import kelma_queue, manifest_cache, schedule_alignment, scheduler_settings
 from .study_days import StudyDayMapper
 from .card_sync import CardSyncConflict, CardSyncResult, sync_cards_once
 from .deck_sync import DeckSyncConflict, DeckSyncResult, sync_decks_once
@@ -292,10 +293,26 @@ def _limit_deletes_to_scoped_server(
     }
 
 
+_SETTINGS_TTL_SECONDS = 600
+_settings_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _account_setting(client: V2Client, name: str, fetch) -> Any:
+    """Study-day policy / FSRS profile, re-read at most every ten minutes."""
+    token = str(getattr(client, "token", "") or "")
+    key = f"{getattr(client, 'endpoint', '')}|{hash(token)}|{name}"
+    cached = _settings_cache.get(key)
+    if cached is not None and time.time() - cached[0] < _SETTINGS_TTL_SECONDS:
+        return cached[1]
+    value = fetch()
+    _settings_cache[key] = (time.time(), value)
+    return value
+
+
 def _study_day_mapper(col: Collection, client: V2Client, progress=None):
     """Map the account's study days onto Anki's days; None if unavailable."""
     try:
-        policy = client.study_day_policy()
+        policy = _account_setting(client, "study_day_policy", client.study_day_policy)
     except Exception:  # noqa: BLE001 - older servers: keep the previous mapping
         return None
     if not isinstance(policy, dict) or not policy.get("timezone_id"):
@@ -508,6 +525,10 @@ def sync_content_once(
         progress("Deletes: none")
 
     result = ContentSyncResult(tombstones=tombstones, local_deletes=local_deletes)
+    # Deck/notetype copies already found equivalent (local and server checksum
+    # pairs), kept with the manifest cache so they are not fetched again.
+    equivalent = manifest.setdefault("_kelma_equivalent", {})
+    equivalent_before = json.dumps(equivalent, sort_keys=True)
 
     try:
         if progress:
@@ -521,6 +542,7 @@ def sync_content_once(
             prefer_server=fresh_restore,
             newest_wins=newest_wins,
             accept_server_timestamp_truncation=accept_server_timestamp_truncation,
+            equivalent=equivalent.setdefault("decks", {}),
         )
     except DeckSyncConflict as e:
         raise ContentSyncConflict("deck", e.conflicts) from e
@@ -537,6 +559,7 @@ def sync_content_once(
             prefer_server=fresh_restore,
             newest_wins=newest_wins,
             accept_server_timestamp_truncation=accept_server_timestamp_truncation,
+            equivalent=equivalent.setdefault("notetypes", {}),
         )
     except NotetypeSyncConflict as e:
         raise ContentSyncConflict("notetype", e.conflicts) from e
@@ -566,7 +589,9 @@ def sync_content_once(
     )
     if day_mapper is not None:
         try:
-            if scheduler_settings.apply_profile(col, client.scheduler_profile()):
+            if scheduler_settings.apply_profile(
+                col, _account_setting(client, "scheduler_profile", client.scheduler_profile)
+            ):
                 if progress:
                     progress("Scheduling: Anki now uses your Kelma FSRS settings")
         except Exception as err:  # noqa: BLE001 - settings are a convenience
@@ -634,6 +659,14 @@ def sync_content_once(
                 raise ContentSyncConflict("card", e.conflicts) from e
             result.cards.pulled += rescheduled.pulled
             result.cards.pushed += rescheduled.pushed
+    if day_mapper is not None:
+        # Today's counts as Kelma Review shows them (new cards first, all
+        # parent limits, siblings buried).
+        try:
+            kelma_queue.apply(col)
+        except Exception as err:  # noqa: BLE001 - counts are a convenience
+            if progress:
+                progress(f"Daily limits: could not apply Kelma Review's rules ({err})")
     if progress:
         progress("Final phase: syncing media…")
     result.media = sync_media_once(
@@ -650,10 +683,26 @@ def sync_content_once(
     # and the deletion baseline remains empty.
     if progress:
         progress("Refreshing post-sync snapshot…")
-    final_notes = anki_local.note_manifest(
-        col, deck_names=deck_names, progress=progress
+    changed_locally = bool(
+        tombstones.applied
+        or local_deletes
+        or result.decks.pulled
+        or result.notetypes.pulled
+        or result.notes.pulled
+        or result.cards.pulled
+        or result.reviews.pulled
+        or result.realigned
+        or fresh_restore
     )
-    final_cards = anki_local.card_manifest(col, deck_names=deck_names)
+    if changed_locally:
+        final_notes = anki_local.note_manifest(
+            col, deck_names=deck_names, progress=progress
+        )
+        final_cards = anki_local.card_manifest(col, deck_names=deck_names)
+    else:
+        # Nothing was applied to the collection: the first snapshot still holds.
+        final_notes = local_note_manifest
+        final_cards = local_card_manifest
     final_notetype_ids = {int(note["notetype_id"]) for note in final_notes}
     final_notetypes = anki_local.notetype_manifest(
         col, notetype_ids=final_notetype_ids
@@ -678,8 +727,23 @@ def sync_content_once(
     }
     if progress:
         progress("Saving sync snapshot…")
-    # What this pass wrote (and anything else that changed meanwhile).
-    final_server_manifest = manifest_cache.refresh(client, manifest)
+    wrote_to_server = bool(
+        local_deletes
+        or result.decks.pushed
+        or result.notetypes.pushed
+        or result.notes.pushed
+        or result.cards.pushed
+        or result.reviews.pushed
+        or result.reviews.study_days_pushed
+        or result.media.uploaded
+    )
+    # What this pass wrote (and anything else that changed meanwhile). When it
+    # wrote nothing, the manifest it worked from is still a correct snapshot.
+    final_server_manifest = (
+        manifest_cache.refresh(client, manifest) if wrote_to_server else manifest
+    )
+    if json.dumps(equivalent, sort_keys=True) != equivalent_before:
+        final_server_manifest["_kelma_changes"] = -1  # save the new pairs
     if deck_names is not None:
         final_server_manifest = _scope_server_manifest_to_decks(
             client, final_server_manifest, deck_names, progress=progress

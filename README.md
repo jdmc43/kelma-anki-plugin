@@ -103,11 +103,26 @@ way. After uploading reviews, a sync waits for the server to schedule them and
 pulls the result in the same pass. Cards placed by older versions on UTC days
 are moved once (and again if the study-day policy changes).
 
+**Same daily counts as Kelma Review.** Kelma Review allots new cards first
+(they count against the review limit), applies every parent deck's limits and
+buries siblings. The add-on turns on Anki's "new cards ignore review limit",
+"apply all parent limits" and sibling burying, and sets each deck's "today
+only" limits to what Kelma Review allots, so the deck list and the study screen
+show the same new/learn/due numbers. Those "today only" values stay local and
+are recomputed after every sync, when a profile opens and when the day changes.
+
+**Syncing in the background.** Sync runs with Anki's spinning sync icon and a
+short note at the end; clicking Sync while it runs (or "Last sync details…"
+afterwards) shows the full log. Only problems that need a decision open a
+window.
+
 **Fast repeat syncs.** The last full server manifest is kept next to the
 collection (`kelma_server_manifest.json.gz`); later syncs ask only for what
 changed since then (a full refresh happens at least daily). HTTP connections are
-reused, and deck/notetype records that another client serialised differently are
-compared in normalised form instead of being pulled again on every sync.
+reused; deck/notetype records that another client serialised differently are
+compared in normalised form once and remembered; review rows already verified
+are not hashed again; the study-day policy and FSRS profile are re-read every
+ten minutes; and nothing is re-read when a sync changed nothing.
 
 Large media restores use the same prepared-TAR protocol as Kelma Kotlin: 128 MiB
 / 10,000-file batches, up to five concurrent preparations in first-ready order,
