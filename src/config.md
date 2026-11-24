@@ -13,9 +13,11 @@ provider:
 
 The provider registry is stored at `kelma-accounts.json` in Anki's base data
 directory. It contains profile names and provider types only—never credentials.
-KelmaSync URL, username, bearer token, client id, cursor, scheduler mode, and
-delete approval are stored separately in `kelma-cloud-account.json` inside the
-profile directory with mode `0600`.
+KelmaSync server URL, username, bearer token, client id, cursor (and the server
+it came from), scheduler mode, and delete approval are stored separately in
+`kelma-cloud-account.json` inside the profile directory with mode `0600`, so each
+profile can use a different KelmaSync server. Change it with **Sync server…**,
+which signs the profile out and resets what it knew about the old server.
 
 Deck data moves between accounts only
 through **Transfer decks between accounts…**. Insert copies a missing deck,
@@ -31,7 +33,7 @@ Global settings:
 - `kelma_profile_created`, `last_ankiweb_profile`: bookkeeping for the Kelma
   profile and the AnkiWeb profile the toggle returns to.
 - `check_for_updates`: check kelma.tech for add-on updates.
-- `v2_url`: default KelmaSync server for new sign-ins.
+- `v2_url`: KelmaSync server for profiles that have not chosen one.
 - `features`: display modifications toggled under **Display modifications**.
 
 Existing global Kelma v2 credentials are migrated into the profile that is open

@@ -18,14 +18,21 @@ def state_path_for(col: Collection) -> Path:  # type: ignore[name-defined]
     return media_dir / "kelma_sync_v2_state.json"
 
 
+def empty_state() -> dict[str, Any]:
+    return {
+        "notes": [], "cards": [], "notetypes": [], "decks": [],
+        "cardScheduleResets": {}, "cardDueDateOverrides": {}, "completedAt": "",
+    }
+
+
 def load_state(col: Collection) -> dict[str, Any]:  # type: ignore[name-defined]
     path = state_path_for(col)
     if not path.exists():
-        return {"notes": [], "cards": [], "notetypes": [], "decks": []}
+        return empty_state()
     try:
         data = json.loads(path.read_text("utf-8"))
     except Exception:
-        return {"notes": [], "cards": [], "notetypes": [], "decks": []}
+        return empty_state()
     for key in ("notes", "cards", "notetypes", "decks"):
         if not isinstance(data.get(key), list):
             data[key] = []
@@ -53,9 +60,11 @@ def build_state(
     card_schedule_resets: dict[str, dict[str, Any]] | None = None,
     card_due_date_overrides: dict[str, dict[str, Any]] | None = None,
     completed_at: str = "",
+    server: str = "",
 ) -> dict[str, Any]:
     return {
         "version": 3,
+        "server": server,
         "scope": sorted(set(scope or [])),
         "notes": sorted(notes),
         "cards": sorted(cards),
@@ -84,3 +93,13 @@ def compute_local_deletes(
 
 # Late import to avoid requiring anki for type-checking-only usage.
 from anki.collection import Collection  # noqa: E402
+
+
+def same_server(snapshot: dict[str, Any], endpoint: str) -> bool:
+    """Whether the snapshot was taken against `endpoint`.
+
+    Snapshots written before servers could be switched carry no server and
+    always came from the profile's own server.
+    """
+    recorded = str(snapshot.get("server") or "").rstrip("/")
+    return not recorded or recorded == str(endpoint or "").rstrip("/")
