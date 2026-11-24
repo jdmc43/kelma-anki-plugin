@@ -1,13 +1,158 @@
-# Kelma cloud accounts (Anki add-on)
+<p align="center">
+  <a href="https://kelma.tech"><img src="docs/images/kelma-icon.png" width="112" alt="Kelma"></a>
+</p>
 
-Adds profile-backed cloud accounts to Anki. Every account is assigned to exactly
-one provider—**AnkiWeb** or **KelmaSync**—and owns a separate Anki collection.
-Normal synchronization never copies changes between accounts.
+<h1 align="center">Kelma for Anki</h1>
 
-## Source and license
+<p align="center">
+  Sync Anki with your Kelma account and keep studying the same decks in
+  <a href="https://github.com/jdmc43/kelma-review">Kelma Review</a> on your phone:
+  the same cards, due dates and daily counts everywhere.<br>
+  Your AnkiWeb profiles keep syncing with AnkiWeb exactly as before.
+</p>
 
-This repository is distributed under the GNU Affero General Public License
-v3.0; see [`LICENSE`](LICENSE).
+<p align="center">
+  <a href="https://kelma.tech/files/kelma-anki-addon.ankiaddon"><img src="https://img.shields.io/badge/Download_for_Anki-.ankiaddon-16a34a?style=for-the-badge&logo=anki&logoColor=white" height="38" alt="Download the Kelma add-on for Anki"></a>
+  &nbsp;
+  <a href="https://kelma.tech/signup"><img src="https://img.shields.io/badge/kelma.tech-Create_a_free_account-111827?style=for-the-badge" height="38" alt="Create a free Kelma account at kelma.tech"></a>
+</p>
+
+<p align="center">
+  <b>Study on your phone with Kelma Review</b><br><br>
+  <a href="https://apps.apple.com/app/kelma-review/id6800817799"><img src="docs/images/badges/app-store.svg" height="44" alt="Download Kelma Review on the App Store"></a>
+  &nbsp;
+  <a href="https://play.google.com/store/apps/details?id=tech.kelma.app"><img src="docs/images/badges/google-play.png" height="44" alt="Get Kelma Review on Google Play"></a>
+</p>
+
+<p align="center">
+  <a href="https://kelma.tech">kelma.tech</a>
+  &nbsp;·&nbsp;
+  <a href="https://kelma.tech/downloads">All Kelma downloads</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/jdmc43/kelma-review">Kelma Review on GitHub</a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/jdmc43/kelma-sync">KelmaSync server</a>
+</p>
+
+<p align="center">
+  <a href="https://kelma.tech/updates/v1.json"><img alt="Latest add-on version" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fkelma.tech%2Fupdates%2Fv1.json&query=%24.addon.version&label=add-on&prefix=v&color=16a34a&style=flat-square"></a>
+  <img alt="Anki 23.10 or newer" src="https://img.shields.io/badge/Anki-23.10%2B-2563eb?style=flat-square">
+  <a href="LICENSE"><img alt="AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <img src="docs/images/screenshots/anki-deck-list.png" width="100%" alt="Anki's deck list in the Kelma profile: every deck marked in sync with a green check, one with 12 new notes and one with 3 changed cards waiting to sync, while the Sync icon spins">
+</p>
+
+## Install
+
+1. Download [`kelma-anki-addon.ankiaddon`](https://kelma.tech/files/kelma-anki-addon.ankiaddon)
+   from [kelma.tech](https://kelma.tech/downloads).
+2. In Anki, choose **Tools → Add-ons → Install from file…** and pick the
+   download (or double-click the file), then restart Anki.
+3. Click **Sync**, choose **Kelma**, and sign in with your Kelma account. No
+   account yet? [Create one for free](https://kelma.tech/signup).
+4. Get [Kelma Review](https://github.com/jdmc43/kelma-review) for
+   [iPhone and iPad](https://apps.apple.com/app/kelma-review/id6800817799) or
+   [Android](https://play.google.com/store/apps/details?id=tech.kelma.app) and
+   sign in with the same account to study the same decks on the go.
+
+The add-on checks kelma.tech for updates and asks before installing one
+(**Tools → Kelma → Check for Kelma updates…** checks now).
+
+## What it looks like
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/sync-popup-kelma.png" alt="The Sync popup in the Kelma profile: an AnkiWeb | Kelma toggle with Kelma selected, the signed-in Kelma account and a green Sync with Kelma button">
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/sync-popup-ankiweb.png" alt="The Sync popup in an AnkiWeb profile: the toggle on AnkiWeb, the AnkiWeb login and a blue Sync with AnkiWeb button">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <b>One Sync button, two clouds.</b> The <b>AnkiWeb | Kelma</b> toggle switches
+      between your Kelma profile and your AnkiWeb profile. Each profile syncs
+      only with its own cloud, so nothing is ever copied between them by accident.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/screenshots/sign-in.png" alt="Sign in to your Kelma account: email and password fields, links to create a free account or reset the password">
+    </td>
+    <td width="50%" valign="middle">
+      <b>Sign in once</b> with the same email and password you use for Kelma
+      Review and kelma.tech. Your password is never stored; the add-on keeps
+      only a sign-in token inside the Kelma profile.
+      <br><br>
+      No account yet? <a href="https://kelma.tech/signup">Create one for free at kelma.tech</a>.
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/images/screenshots/sync-details.png" width="85%" alt="Kelma sync details: a timed log of a 3.6-second sync that uploaded 41 reviews and pulled their new due dates">
+      <br>
+      <b>Syncs in the background.</b> Anki's sync icon spins and a short note
+      reports what changed. Click <b>Sync</b> while it runs to see the full log.
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/images/screenshots/accounts.png" width="75%" alt="Cloud accounts: the Kelma profile assigned to KelmaSync and User 1 assigned to AnkiWeb">
+      <br>
+      <b>Accounts and collections.</b> Every Anki profile belongs to exactly one
+      cloud. Reassign profiles or move decks between them explicitly.
+    </td>
+  </tr>
+</table>
+
+## Kelma Review
+
+<p align="center">
+  <a href="https://github.com/jdmc43/kelma-review"><img src="docs/images/kelma-review/icon.png" width="88" alt="Kelma Review"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/jdmc43/kelma-review">Kelma Review</a> is the free,
+  open source flashcard app for iPhone, Android, macOS, Windows and Linux that
+  shares your Kelma decks with Anki. Review on your phone, keep editing in
+  Anki: both show the same due dates and daily counts.
+</p>
+
+<p align="center">
+  <img src="docs/images/kelma-review/phone-decks.png" width="30%" alt="Kelma Review on iPhone: the deck list">
+  <img src="docs/images/kelma-review/phone-review.png" width="30%" alt="Kelma Review on iPhone: a flashcard with a photo, audio and example sentences">
+  <img src="docs/images/kelma-review/phone-fsrs.png" width="30%" alt="Kelma Review on iPhone: FSRS-6 answer buttons with the next intervals">
+</p>
+
+<p align="center">
+  <a href="https://apps.apple.com/app/kelma-review/id6800817799"><img src="docs/images/badges/app-store.svg" height="44" alt="Download Kelma Review on the App Store"></a>
+  &nbsp;
+  <a href="https://play.google.com/store/apps/details?id=tech.kelma.app"><img src="docs/images/badges/google-play.png" height="44" alt="Get Kelma Review on Google Play"></a>
+  <br>
+  <sub>
+    Desktop downloads and source code:
+    <a href="https://github.com/jdmc43/kelma-review">github.com/jdmc43/kelma-review</a>
+    · <a href="https://kelma.tech/downloads">kelma.tech/downloads</a>
+  </sub>
+</p>
+
+## How accounts work
+
+1. Install the add-on and restart Anki. It adds a **Kelma** profile for your
+   Kelma account (once; an existing profile assigned to KelmaSync is reused).
+2. Click **Sync**. The popup has an **AnkiWeb | Kelma** toggle: choose
+   **Kelma** to switch to the Kelma profile. If you are not signed in, the
+   add-on asks you to sign in with your Kelma account (or create one at
+   kelma.tech), then syncs your Kelma decks. Kelma decks show a green ✓, or
+   `+added` / `~changed` until the next sync.
+3. Choose **AnkiWeb** in the same toggle to return to your last AnkiWeb profile.
+   **Tools → Kelma → Switch to … account** does the same.
+
+Open **Tools → Kelma → Accounts and collections…** to assign profiles, switch
+accounts, or open Anki's profile manager to add/remove profiles.
 
 ## Account model
 
@@ -34,21 +179,6 @@ Anki profile / account A                 Anki profile / account B
   profiles keep syncing with AnkiWeb exactly as before.
 - A Kelma account blocks native AnkiWeb auto-sync. An AnkiWeb account never runs
   KelmaSync during normal sync.
-
-## Getting started
-
-1. Install the add-on and restart Anki. It adds a **Kelma** profile for your
-   Kelma account (once; an existing profile assigned to KelmaSync is reused).
-2. Click **Sync**. The popup has an **AnkiWeb | Kelma** toggle: choose
-   **Kelma** to switch to the Kelma profile. If you are not signed in, the
-   add-on asks you to sign in with your Kelma account (or create one at
-   kelma.tech), then syncs your Kelma decks. Kelma decks show a green ✓, or
-   `+added` / `~changed` until the next sync.
-3. Choose **AnkiWeb** in the same toggle to return to your last AnkiWeb profile.
-   **Tools → Kelma → Switch to … account** does the same.
-
-Open **Tools → Kelma → Accounts and collections…** to assign profiles, switch
-accounts, or open Anki's profile manager to add/remove profiles.
 
 ## Explicit deck transfer
 
@@ -190,3 +320,8 @@ Set `KELMA_SYNC_SERVER_REPO` to test against a server checkout elsewhere.
 - Modern Anki with the Rust backend (approximately 23.10 or newer).
 - One Anki profile per cloud account.
 - KelmaSync v2 access for Kelma accounts.
+
+## Source and license
+
+This repository is distributed under the GNU Affero General Public License
+v3.0; see [`LICENSE`](LICENSE).
