@@ -8,12 +8,19 @@ siblings are buried by default). Anki always fills reviews first and gives new
 cards the rest, so the same deck can show 0 new + 100 due in Anki but 40 new +
 60 due in Kelma Review.
 
+What counts as studied today also follows Kelma Review: it is read from the
+review history (a card's first review ever is a new card, a review-type answer
+counts once per card), so reviews done in Kelma Review or on another device
+count as soon as they are synced. Anki's own "studied today" counters only grow
+for answers given in this Anki, and a parent deck's counters include its
+subdecks. Siblings of cards studied today are held back.
+
 Anki can show the same numbers: with "new cards ignore review limit" and
-"apply all parent limits" on, a deck's "today only" limits are set to what
-Kelma Review allots (new: studied + allotted; reviews: review limit − new
-studied − new allotted). Those "today only" values are local (Kelma Review and
-KelmaSync ignore them) and expire by themselves the next day; the add-on sets
-them again after every sync and when a profile opens or the day changes.
+"apply all parent limits" on, each deck's "today only" limits are set to
+Anki's own counter plus what Kelma Review allots, so what remains is exactly
+the allotment. Those "today only" values are local (Kelma Review and KelmaSync
+ignore them) and expire by themselves the next day; the add-on sets them again
+after every sync and when a profile opens or the day changes.
 """
 from __future__ import annotations
 
@@ -45,7 +52,8 @@ class _Snapshot:
         self.name_of = {did: str(deck["name"]) for did, deck in self.decks.items()}
         self.by_name = {name: did for did, name in self.name_of.items()}
         self.limits: dict[str, tuple[int, int]] = {}
-        self.studied: dict[str, tuple[int, int]] = {}
+        # Anki's own counters (this Anki's answers only, subdecks included).
+        self.counters: dict[str, tuple[int, int]] = {}
         self.preset_bury: dict[str, tuple[bool, bool]] = {}
         for did, deck in self.decks.items():
             name = self.name_of[did]
@@ -58,7 +66,7 @@ class _Snapshot:
             )
             new_today = deck.get("newToday") or [0, 0]
             rev_today = deck.get("revToday") or [0, 0]
-            self.studied[name] = (
+            self.counters[name] = (
                 int(new_today[1]) if int(new_today[0]) == self.today else 0,
                 int(rev_today[1]) if int(rev_today[0]) == self.today else 0,
             )
@@ -71,6 +79,33 @@ class _Snapshot:
             name = self.name_of.get(int(did))
             if name is not None:
                 self.cards_by_deck[name].append((int(cid), guid, int(ord_), int(queue), int(due)))
+        self._read_studied_today(col)
+
+    def _read_studied_today(self, col) -> None:
+        """Today's studied cards per deck from the review history, as Kelma Review counts them."""
+        start_ms = (int(col.sched.day_cutoff) - 86400) * 1000
+        new: dict[str, set[int]] = defaultdict(set)
+        review: dict[str, set[int]] = defaultdict(set)
+        self.studied_ords: dict[str, set[int]] = defaultdict(set)
+        for cid, guid, ord_, did, odid, typ, first in col.db.all(
+            "SELECT r.cid, n.guid, c.ord, c.did, c.odid, r.type, "
+            "r.id = (SELECT min(id) FROM revlog WHERE cid = r.cid) "
+            "FROM revlog r JOIN cards c ON c.id = r.cid JOIN notes n ON n.id = c.nid "
+            "WHERE r.id >= ? ORDER BY r.id",
+            start_ms,
+        ):
+            self.studied_ords[guid].add(int(ord_))
+            name = self.name_of.get(int(odid or did))
+            if name is None:
+                continue
+            if first:
+                new[name].add(int(cid))
+            elif int(typ) == 1:
+                review[name].add(int(cid))
+        self.studied = {
+            name: (len(new.get(name, ())), len(review.get(name, ())))
+            for name in self.by_name
+        }
 
     def subtree_studied(self, root: str) -> tuple[int, int]:
         new = review = 0
@@ -78,11 +113,19 @@ class _Snapshot:
             if _in_subtree(name, root):
                 new += studied_new
                 review += studied_review
-        return new, review
+        # Anki's counter covers subdecks too; it can only be higher when the
+        # history is missing rows (e.g. answers whose cards were deleted).
+        counter_new, counter_review = self.counters.get(root, (0, 0))
+        return max(new, counter_new), max(review, counter_review)
 
 
 def allot(snapshot: _Snapshot, root: str, *, bury: bool = True) -> tuple[int, int, int]:
     """Kelma Review's (new, learning, review) counts for `root` and its subdecks."""
+    return _allot(snapshot, root, bury=bury)[:3]
+
+
+def _allot(snapshot: _Snapshot, root: str, *, bury: bool = True) -> tuple[int, int, int, int]:
+    """(new, learning, review, interday learning) for `root`."""
     names = [name for name in snapshot.by_name if _in_subtree(name, root)]
     limit_decks = set(_path(root)) | {deck for name in names for deck in _path(name)}
     remaining_new: dict[str, int] = {}
@@ -103,13 +146,19 @@ def allot(snapshot: _Snapshot, root: str, *, bury: bool = True) -> tuple[int, in
         (item for item in cards if item[1][3] == 2 and item[1][4] <= snapshot.today),
         key=lambda item: (item[1][4], item[1][0]),
     )
-    learning = sum(
+    intraday = sum(
         1
         for _name, (_cid, _guid, _ord, queue, due) in cards
-        if (queue == 1 and due <= snapshot.now + LEARN_AHEAD_SECONDS)
-        or (queue == 3 and due <= snapshot.today)
+        if queue == 1 and due <= snapshot.now + LEARN_AHEAD_SECONDS
     )
+    interday = sum(
+        1 for _name, (_cid, _guid, _ord, queue, due) in cards if queue == 3 and due <= snapshot.today
+    )
+    # Siblings of cards studied today are held back, as in Kelma Review.
     seen: dict[str, set[int]] = defaultdict(set)
+    if bury:
+        for guid, ords in snapshot.studied_ords.items():
+            seen[guid] = set(ords)
     allotted_new = allotted_review = 0
     for name, (_cid, guid, ord_, _queue, _due) in new_cards:
         if bury and seen[guid] - {ord_}:
@@ -130,7 +179,7 @@ def allot(snapshot: _Snapshot, root: str, *, bury: bool = True) -> tuple[int, in
                 remaining_review[deck] -= 1
             allotted_review += 1
             seen[guid].add(ord_)
-    return allotted_new, learning, allotted_review
+    return allotted_new, intraday + interday, allotted_review, interday
 
 
 def apply(col) -> int:
@@ -151,15 +200,15 @@ def apply(col) -> int:
     snapshot = _Snapshot(col)
     changed = 0
     for name, did in snapshot.by_name.items():
-        allotted_new, _learning, _review = allot(snapshot, name)
-        new_limit, review_limit = snapshot.limits[name]
-        studied_new, studied_review = snapshot.studied[name]
-        subtree_new, _subtree_review = snapshot.subtree_studied(name)
-        # Anki compares each limit with the deck's own "today" counters.
+        allotted_new, _learning, allotted_review, interday = _allot(snapshot, name)
+        counter_new, counter_review = snapshot.counters[name]
+        # Anki subtracts the deck's own counter from each limit, so the limit
+        # is that counter plus the allotment. Interday learning cards use up
+        # Anki's review limit (not Kelma Review's), so they get room as well.
         wanted: dict[str, Any] = {
-            "newLimitToday": {"limit": studied_new + allotted_new, "today": snapshot.today},
+            "newLimitToday": {"limit": counter_new + allotted_new, "today": snapshot.today},
             "reviewLimitToday": {
-                "limit": studied_review + max(0, review_limit - _subtree_review - subtree_new - allotted_new),
+                "limit": counter_review + allotted_review + interday,
                 "today": snapshot.today,
             },
         }

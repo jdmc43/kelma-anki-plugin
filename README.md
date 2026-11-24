@@ -105,7 +105,9 @@ are moved once (and again if the study-day policy changes).
 
 **Same daily counts as Kelma Review.** Kelma Review allots new cards first
 (they count against the review limit), applies every parent deck's limits and
-buries siblings. The add-on turns on Anki's "new cards ignore review limit",
+buries siblings, and it counts what was studied today from the review history,
+so reviews done in Kelma Review or on another device count as soon as they are
+synced. The add-on turns on Anki's "new cards ignore review limit",
 "apply all parent limits" and sibling burying, and sets each deck's "today
 only" limits to what Kelma Review allots, so the deck list and the study screen
 show the same new/learn/due numbers. Those "today only" values stay local and
