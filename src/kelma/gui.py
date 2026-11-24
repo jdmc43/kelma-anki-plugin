@@ -34,6 +34,7 @@ from aqt.qt import (
     QLineEdit,
     QMenu,
     QPushButton,
+    QRadioButton,
     pyqtSignal,
     QTableWidget,
     QTableWidgetItem,
@@ -46,7 +47,7 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip, askUser
 
-from . import accounts, branding, config, consts, deckbadges, features, legacy_copies, paths, state, updater
+from . import accounts, branding, config, consts, deckbadges, features, legacy_copies, paths, state, sync_server, updater
 from .kelma_sync_v2 import kelma_queue
 
 _orig_sync = None
@@ -184,13 +185,14 @@ class AccountDialog(QDialog):
 
         profiles = list(mw.pm.profiles())
         records = accounts.load_registry(mw.pm.base)
-        self.table = QTableWidget(len(profiles), 3)
-        self.table.setHorizontalHeaderLabels(["Account / Anki profile", "Cloud", "Collection"])
+        self.table = QTableWidget(len(profiles), 4)
+        self.table.setHorizontalHeaderLabels(["Account / Anki profile", "Cloud", "KelmaSync server", "Collection"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self._profiles = profiles
         self._selectors: dict[str, QComboBox] = {}
         for row, profile in enumerate(profiles):
@@ -205,8 +207,16 @@ class AccountDialog(QDialog):
             selector.setCurrentIndex(max(0, selected))
             self.table.setCellWidget(row, 1, selector)
             self._selectors[profile] = selector
+            server_url = config.server_url_for_profile(profile)
+            server_item = QTableWidgetItem(
+                sync_server.label(server_url)
+                if accounts.effective_provider(records, profile) == accounts.KELMA
+                else "—"
+            )
+            server_item.setToolTip(server_url)
+            self.table.setItem(row, 2, server_item)
             path = accounts.collection_path(mw.pm.base, profile)
-            self.table.setItem(row, 2, QTableWidgetItem("Available" if path.exists() else "Not created"))
+            self.table.setItem(row, 3, QTableWidgetItem("Available" if path.exists() else "Not created"))
         if mw.pm.name in profiles:
             self.table.selectRow(profiles.index(mw.pm.name))
         layout.addWidget(self.table)
@@ -218,11 +228,15 @@ class AccountDialog(QDialog):
         switch.clicked.connect(self._switch)
         merge = QPushButton("Transfer or merge decks…")
         merge.clicked.connect(self._merge)
+        server = QPushButton("Sync server…")
+        server.setToolTip("Choose the KelmaSync server for the current profile")
+        server.clicked.connect(self._server)
         profiles_button = QPushButton("Add or remove profiles…")
         profiles_button.clicked.connect(self._profiles_manager)
         actions.addWidget(save)
         actions.addWidget(switch)
         actions.addWidget(merge)
+        actions.addWidget(server)
         actions.addWidget(profiles_button)
         layout.addLayout(actions)
 
@@ -271,6 +285,11 @@ class AccountDialog(QDialog):
         self._save()
         self.accept()
         _merge_profile_into_current(profile)
+
+    def _server(self) -> None:
+        self._save()
+        self.accept()
+        _open_sync_server_dialog()
 
     def _profiles_manager(self) -> None:
         if _V2_ACTIVE_ACTION:
@@ -411,9 +430,15 @@ class V2LoginDialog(QDialog):
         self.username_value = ""
         self.client_label = "KelmaDesktop" if config.kelmasync_only() else "Anki plugin"
 
-        self.setWindowTitle(
-            "Sign in to KelmaDesktop" if config.kelmasync_only() else "Sign in to KelmaSync"
-        )
+        self.change_server = False
+        kelma_server = sync_server.is_default(endpoint)
+        server_name = sync_server.label(endpoint)
+        if kelma_server:
+            self.setWindowTitle(
+                "Sign in to KelmaDesktop" if config.kelmasync_only() else "Sign in to KelmaSync"
+            )
+        else:
+            self.setWindowTitle(f"Sign in to {server_name}")
         self.setModal(True)
         self.setMinimumWidth(420)
 
@@ -421,26 +446,50 @@ class V2LoginDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 16)
         layout.setSpacing(8)
 
-        title = QLabel("Sign in to your Kelma account")
+        title = QLabel(
+            "Sign in to your Kelma account" if kelma_server else f"Sign in to {_esc(server_name)}"
+        )
         font = title.font()
         font.setPointSize(15)
         font.setBold(True)
         title.setFont(font)
         layout.addWidget(title)
 
-        account_text = (
-            'Use the same email and password as your '
-            '<a href="https://kelma.tech">Kelma Immersion account</a>.'
-        )
+        if kelma_server:
+            account_text = (
+                'Use the same email and password as your '
+                '<a href="https://kelma.tech">Kelma Immersion account</a>.'
+            )
+        else:
+            account_text = (
+                "Use your account on this KelmaSync server. Accounts on it are "
+                "created by whoever runs the server."
+            )
         if not config.kelmasync_only():
             account_text += " This is separate from your AnkiWeb login."
         account_help = QLabel(account_text)
         account_help.setOpenExternalLinks(True)
         account_help.setWordWrap(True)
         layout.addWidget(account_help)
+
+        profile_name = _esc(str(getattr(mw.pm, "name", "") or ""))
+        server_line = QLabel(
+            f"<span style='color:#888'>Server for profile “{profile_name}”:</span> "
+            f"<b>{_esc(server_name if kelma_server else endpoint)}</b>"
+            + " &nbsp;<a href='change'>Change…</a>"
+        )
+        server_line.setWordWrap(True)
+        server_line.setToolTip(endpoint)
+        server_line.linkActivated.connect(self._change_server)
+        layout.addWidget(server_line)
+        if sync_server.is_unencrypted(endpoint) and not sync_server.is_local(endpoint):
+            warning = QLabel("⚠ This server address is not encrypted (http://). Your password is sent in the clear.")
+            warning.setStyleSheet("color: #b45309;")
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
         layout.addSpacing(6)
 
-        layout.addWidget(QLabel("Email"))
+        layout.addWidget(QLabel("Email" if kelma_server else "Email or username"))
         self.email = QLineEdit(str(cfg.get("v2_username", "")))
         self.email.setPlaceholderText("you@example.com")
         layout.addWidget(self.email)
@@ -464,16 +513,19 @@ class V2LoginDialog(QDialog):
         self.error.hide()
         layout.addWidget(self.error)
 
-        links = QLabel(
-            '<a href="https://kelma.tech/signup">Create a free Kelma account</a>'
-            ' &nbsp;·&nbsp; <a href="https://kelma.tech/signin">Forgot password?</a>'
-        )
-        links.setOpenExternalLinks(True)
-        layout.addWidget(links)
+        if kelma_server:
+            links = QLabel(
+                '<a href="https://kelma.tech/signup">Create a free Kelma account</a>'
+                ' &nbsp;·&nbsp; <a href="https://kelma.tech/signin">Forgot password?</a>'
+            )
+            links.setOpenExternalLinks(True)
+            layout.addWidget(links)
 
         layout.addSpacing(4)
         buttons = QDialogButtonBox()
-        self.sign_in = buttons.addButton("Sign In to Kelma", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.sign_in = buttons.addButton(
+            "Sign In to Kelma" if kelma_server else "Sign In", QDialogButtonBox.ButtonRole.AcceptRole
+        )
         self.sign_in.setDefault(True)
         cancel = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
         self.sign_in.clicked.connect(self._sign_in)
@@ -481,6 +533,10 @@ class V2LoginDialog(QDialog):
         layout.addWidget(buttons)
 
         (self.password if self.email.text().strip() else self.email).setFocus()
+
+    def _change_server(self, _link: str = "") -> None:
+        self.change_server = True
+        self.reject()
 
     def _show_error(self, message: str) -> None:
         clean = re.sub(r"^.*?:\s*", "", str(message)).strip()
@@ -520,18 +576,22 @@ def _v2_client_or_login():
         tooltip(f"KelmaSync client package is not installed: {err}")
         return None
 
-    cfg = config.get()
-    endpoint = cfg.get("v2_url") or consts.DEFAULT_V2_URL
-    token = cfg.get("v2_token") or ""
-    # Login delegates to Kelma Immersion and may include a live account-status
-    # check, so do not use the old 12-second UI timeout.
-    client = V2Client(endpoint, token=token, timeout=30)
-    if token:
-        return client
+    while True:
+        cfg = config.get()
+        endpoint = cfg.get("v2_url") or consts.DEFAULT_V2_URL
+        token = cfg.get("v2_token") or ""
+        # Login delegates to Kelma Immersion and may include a live account-status
+        # check, so do not use the old 12-second UI timeout.
+        client = V2Client(endpoint, token=token, timeout=30)
+        if token:
+            return client
 
-    dialog = V2LoginDialog(mw, client, cfg, endpoint)
-    if dialog.exec() != QDialog.DialogCode.Accepted or dialog.auth_out is None:
-        return None
+        dialog = V2LoginDialog(mw, client, cfg, endpoint)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.auth_out is not None:
+            break
+        if not dialog.change_server or not SyncServerDialog(mw).exec():
+            return None
+        # The profile now points at another server: sign in there.
 
     cfg["v2_url"] = endpoint
     cfg["v2_username"] = dialog.username_value
@@ -539,7 +599,7 @@ def _v2_client_or_login():
     cfg["v2_client_id"] = dialog.auth_out.client_id
     cfg["v2_client_label"] = dialog.client_label
     config.save(cfg)
-    tooltip("Signed in to KelmaSync.")
+    tooltip(f"Signed in to {sync_server.label(endpoint)}.")
     return client
 
 
@@ -1081,7 +1141,16 @@ class V2SettingsDialog(QDialog):
         grid = QGridLayout()
         layout.addLayout(grid)
 
-        self.endpoint = QLineEdit(cfg.get("v2_url", consts.DEFAULT_V2_URL))
+        endpoint_url = cfg.get("v2_url", consts.DEFAULT_V2_URL)
+        self.endpoint = QWidget()
+        endpoint_row = QHBoxLayout(self.endpoint)
+        endpoint_row.setContentsMargins(0, 0, 0, 0)
+        endpoint_label = QLabel(f"{sync_server.label(endpoint_url)} ({endpoint_url})")
+        endpoint_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        change_endpoint = QPushButton("Change…")
+        change_endpoint.clicked.connect(self._change_server)
+        endpoint_row.addWidget(endpoint_label, 1)
+        endpoint_row.addWidget(change_endpoint)
         self.username = QLineEdit(cfg.get("v2_username", ""))
         self.label = QLineEdit(cfg.get("v2_client_label", "Anki plugin"))
         self.last = QLabel(cfg.get("v2_last_server_time", "") or "(none)")
@@ -1093,8 +1162,8 @@ class V2SettingsDialog(QDialog):
         self.scheduling_mode.setCurrentIndex(1 if mode == "local_anki" else 0)
 
         for row, (name, widget) in enumerate([
-            ("Endpoint", self.endpoint),
-            ("Kelma Immersion email", self.username),
+            ("Server", self.endpoint),
+            ("Account email or username", self.username),
             ("Client label", self.label),
             ("Token", self.token),
             ("Last server time", self.last),
@@ -1124,9 +1193,12 @@ class V2SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _change_server(self) -> None:
+        self.reject()
+        _open_sync_server_dialog()
+
     def _save(self) -> None:
         cfg = config.get()
-        cfg["v2_url"] = self.endpoint.text().strip() or consts.DEFAULT_V2_URL
         cfg["v2_username"] = self.username.text().strip()
         cfg["v2_client_label"] = self.label.text().strip() or "Anki plugin"
         cfg["v2_allow_large_deletes"] = self.allow_large_deletes.isChecked()
@@ -1134,6 +1206,173 @@ class V2SettingsDialog(QDialog):
         config.save(cfg)
         tooltip("KelmaSync v2 settings saved.")
         self.accept()
+
+
+class SyncServerDialog(QDialog):
+    """Choose the KelmaSync server for the current profile.
+
+    Each profile keeps its own server and sign-in. Switching signs this profile
+    out and resets what it knew about the old server; the collection stays.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent or mw)
+        self.setWindowTitle("Sync server")
+        self.setMinimumWidth(500)
+        cfg = config.get()
+        self._current = sync_server.normalize(cfg.get("v2_url") or consts.DEFAULT_V2_URL)
+        profile = _esc(str(getattr(mw.pm, "name", "") or ""))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(8)
+        layout.addWidget(_brand_header("Sync server"))
+        intro = QLabel(
+            f"Choose where profile <b>“{profile}”</b> syncs. Every Anki profile has "
+            "its own server and sign-in, so another profile can use a different one."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self.kelma = QRadioButton(f"Kelma  ({sync_server.host(consts.DEFAULT_V2_URL)})")
+        self.custom = QRadioButton("Another KelmaSync server")
+        layout.addWidget(self.kelma)
+        layout.addWidget(self.custom)
+        row = QHBoxLayout()
+        row.setContentsMargins(24, 0, 0, 0)
+        self.url = QLineEdit("" if sync_server.is_default(self._current) else self._current)
+        self.url.setPlaceholderText("https://sync.example.org")
+        self.check_button = QPushButton("Check")
+        self.check_button.clicked.connect(self._check)
+        row.addWidget(self.url, 1)
+        row.addWidget(self.check_button)
+        layout.addLayout(row)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        self.status.setContentsMargins(24, 0, 0, 0)
+        layout.addWidget(self.status)
+
+        note = QLabel(
+            "<span style='color:#888'>Accounts on a self-hosted server are created by "
+            "whoever runs it. Switching signs this profile out; your cards stay on this "
+            "computer and the next sync merges them with that account.</span>"
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.save_button.setMinimumWidth(
+            self.save_button.fontMetrics().horizontalAdvance("Switch server") + 40
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        (self.kelma if sync_server.is_default(self._current) else self.custom).setChecked(True)
+        self.kelma.toggled.connect(self._update)
+        self.url.textChanged.connect(self._update)
+        self._update()
+
+    def _chosen(self) -> str:
+        if self.kelma.isChecked():
+            return consts.DEFAULT_V2_URL
+        return sync_server.normalize(self.url.text())
+
+    def _update(self) -> None:
+        custom = self.custom.isChecked()
+        self.url.setEnabled(custom)
+        self.check_button.setEnabled(custom)
+        try:
+            chosen = self._chosen()
+        except ValueError:
+            chosen = None
+        self.save_button.setText("Save" if chosen in (None, self._current) else "Switch server")
+        if chosen and sync_server.is_unencrypted(chosen) and not sync_server.is_local(chosen):
+            self._set_status("⚠ http:// is not encrypted; passwords and cards would be sent in the clear.", "#b45309")
+        else:
+            self._set_status("")
+
+    def _set_status(self, text: str, color: str = "") -> None:
+        self.status.setText(f"<span style='color:{color}'>{_esc(text)}</span>" if color else _esc(text))
+
+    def _check(self) -> bool:
+        try:
+            url = self._chosen()
+        except ValueError as err:
+            self._set_status(str(err), "#b91c1c")
+            return False
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            sync_server.check(url)
+        except sync_server.ServerCheckError as err:
+            self._set_status(str(err), "#b91c1c")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._set_status(f"✓ {sync_server.label(url)} is a KelmaSync server.", "#16a34a")
+        return True
+
+    def _save(self) -> None:
+        if _V2_ACTIVE_ACTION:
+            self._set_status(_v2_active_message() or "Wait for synchronization to finish.", "#b91c1c")
+            return
+        try:
+            url = self._chosen()
+        except ValueError as err:
+            self._set_status(str(err), "#b91c1c")
+            return
+        if url == self._current:
+            self.reject()
+            return
+        if not self._check():
+            if not askUser(
+                "That address did not answer like a KelmaSync server. Use it anyway?",
+                parent=self,
+                defaultno=True,
+            ):
+                return
+        old_name, new_name = sync_server.label(self._current), sync_server.label(url)
+        if not askUser(
+            f"Switch profile “{mw.pm.name}” from {old_name} to {new_name}?\n\n"
+            f"This signs the profile out of {old_name}. Your cards stay on this "
+            f"computer. The next sync uploads them to your account on {new_name} "
+            "and merges them with anything already there. Nothing is deleted on "
+            "either server.",
+            parent=self,
+        ):
+            return
+        switch_sync_server(url)
+        self.accept()
+
+
+def switch_sync_server(url: str) -> None:
+    """Point the current profile at `url`: signed out, with no old-server state."""
+    config.save(sync_server.switched_account(config.get(), url))
+    try:
+        sync_server.reset_server_state(mw.pm.profileFolder(), mw.col)
+    except Exception as err:  # noqa: BLE001 - state files are rebuilt by the next sync
+        print(f"Kelma: resetting server state failed: {err}")
+    deckbadges.invalidate_sizes()
+    try:
+        mw.deckBrowser.refresh()
+    except Exception:  # noqa: BLE001
+        pass
+    tooltip(f"This profile now syncs with {sync_server.label(url)}. Sign in to sync.")
+
+
+def _open_sync_server_dialog() -> None:
+    if _V2_ACTIVE_ACTION:
+        tooltip(_v2_active_message() or "Wait for synchronization to finish.")
+        return
+    if not config.kelmasync_only() and _current_account_provider() != accounts.KELMA:
+        tooltip("This profile syncs with AnkiWeb. Open your Kelma profile to choose its server.")
+        return
+    if SyncServerDialog(mw).exec():
+        # Offer the sign-in for the new server right away.
+        _v2_client_or_login()
 
 
 def _mark_service_synced_for_badges(service: str) -> None:
@@ -1157,6 +1396,7 @@ def _v2_forget_login() -> None:
     cfg["v2_token"] = ""
     cfg["v2_client_id"] = ""
     cfg["v2_last_server_time"] = ""
+    cfg["v2_cursor_url"] = ""
     config.save(cfg)
     tooltip("KelmaSync v2 login/checkpoint cleared.")
 
@@ -1248,7 +1488,8 @@ def _kelma_desktop_sync_menu() -> None:
         act_kelma.setEnabled(False)
         act_compare.setEnabled(False)
     menu.addSeparator()
-    act_v2_settings = menu.addAction("KelmaSync account/server…")
+    act_server = menu.addAction(f"Sync server: {sync_server.label(endpoint)}…")
+    act_v2_settings = menu.addAction("KelmaSync account settings…")
     act_forget = menu.addAction("Forget login")
 
     chosen = menu.exec(QCursor.pos())
@@ -1258,6 +1499,8 @@ def _kelma_desktop_sync_menu() -> None:
         _v2_sync_kelma()
     elif chosen is act_compare:
         V2FullDiffDialog(mw).exec()
+    elif chosen is act_server:
+        _open_sync_server_dialog()
     elif chosen is act_v2_settings:
         V2SettingsDialog(mw).exec()
     elif chosen is act_forget:
@@ -1459,10 +1702,20 @@ def _v2_sync_menu() -> None:
     if on_kelma:
         signed_in = bool(cfg.get("v2_token"))
         who = _esc(cfg.get("v2_username") or "signed in") if signed_in else "not signed in"
-        status_text = f"<b>Kelma account</b> · {who}"
+        server_url = cfg.get("v2_url") or consts.DEFAULT_V2_URL
+        if sync_server.is_default(server_url):
+            status_text = f"<b>Kelma account</b> · {who}"
+        else:
+            status_text = (
+                f"<b>{_esc(sync_server.label(server_url))}</b> · {who}"
+                "<br><span style='color:#888'>Self-hosted KelmaSync server</span>"
+            )
         if mw.pm.name.casefold() != accounts.KELMA_PROFILE_NAME.casefold():
             status_text += f"<br><span style='color:#888'>Profile “{_esc(mw.pm.name)}”</span>"
-        primary_text = "Sync with Kelma" if signed_in else "Sign in and sync"
+        if not signed_in:
+            primary_text = "Sign in and sync"
+        else:
+            primary_text = "Sync with Kelma" if sync_server.is_default(server_url) else "Sync now"
     else:
         user = str((getattr(mw.pm, "profile", None) or {}).get("syncUser") or "")
         who = _esc(user) if user else (
@@ -1497,6 +1750,7 @@ def _v2_sync_menu() -> None:
     menu.addAction(panel_action)
     menu.addSeparator()
     details = menu.addAction("Last sync details…") if on_kelma and _SYNC_DIALOG is not None else None
+    server_action = menu.addAction("Sync server…") if on_kelma else None
     redownload = menu.addAction("Delete and redownload media…") if on_kelma else None
     manage = menu.addAction("Accounts and collections…")
     transfer = menu.addAction("Transfer decks between accounts…")
@@ -1511,6 +1765,8 @@ def _v2_sync_menu() -> None:
         _switch_account(accounts.ANKIWEB)
     elif details is not None and chosen is details:
         _show_sync_details()
+    elif server_action is not None and chosen is server_action:
+        _open_sync_server_dialog()
     elif redownload is not None and chosen is redownload:
         _v2_delete_and_redownload_media()
     elif chosen is manage:
@@ -1761,7 +2017,9 @@ def _v2_sync_kelma() -> None:
         return
 
     cfg = config.get()
-    since = cfg.get("v2_last_server_time") or None
+    # The "changes since" checkpoint is only valid for the server that set it.
+    cursor_url = str(cfg.get("v2_cursor_url") or "").rstrip("/")
+    since = (cfg.get("v2_last_server_time") or None) if cursor_url in ("", client.endpoint) else None
     _V2_ACTIVE_ACTION = "sync"
     if _SYNC_DIALOG is not None:
         _SYNC_DIALOG.close()
@@ -1824,6 +2082,7 @@ def _v2_sync_kelma() -> None:
             return
         cfg2 = config.get()
         cfg2["v2_last_server_time"] = result.server_time
+        cfg2["v2_cursor_url"] = client.endpoint
         cfg2["v2_allow_large_deletes"] = False
         config.save(cfg2)
         # Pulled scheduling/content is a synchronized update, not a local edit.
@@ -1888,6 +2147,11 @@ def _build_menu() -> None:
         menu.addAction(act_switch)
         menu.aboutToShow.connect(lambda: act_switch.setText(_other_account_label()))
 
+        act_server = QAction("Sync server…", mw)
+        act_server.setToolTip("Choose the KelmaSync server for this profile")
+        act_server.triggered.connect(_open_sync_server_dialog)
+        menu.addAction(act_server)
+
         act_media_restore = QAction("Delete and redownload KelmaSync media…", mw)
         act_media_restore.triggered.connect(_v2_delete_and_redownload_media)
         menu.addAction(act_media_restore)
@@ -1906,7 +2170,7 @@ def _build_menu() -> None:
 
     menu.addSeparator()
 
-    act_v2_settings = QAction("KelmaSync login/server…", mw)
+    act_v2_settings = QAction("KelmaSync account settings…", mw)
     act_v2_settings.triggered.connect(lambda: V2SettingsDialog(mw).exec())
     menu.addAction(act_v2_settings)
 

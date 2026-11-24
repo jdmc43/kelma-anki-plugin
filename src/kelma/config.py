@@ -22,6 +22,7 @@ _ACCOUNT_KEYS = {
     "v2_client_id",
     "v2_client_label",
     "v2_last_server_time",
+    "v2_cursor_url",
     "v2_allow_large_deletes",
     "v2_scheduling_mode",
 }
@@ -32,6 +33,9 @@ _ACCOUNT_DEFAULTS: dict[str, Any] = {
     "v2_client_id": "",
     "v2_client_label": "Anki plugin",
     "v2_last_server_time": "",
+    # Server that produced v2_last_server_time ("" for checkpoints saved before
+    # servers could be switched, which always came from the profile's server).
+    "v2_cursor_url": "",
     "v2_allow_large_deletes": False,
     "v2_scheduling_mode": "server_fsrs",
 }
@@ -139,6 +143,7 @@ def get() -> dict[str, Any]:
         "KelmaDesktop" if _running_in_kelma_desktop() else "Anki plugin",
     )
     cfg.setdefault("v2_last_server_time", "")
+    cfg.setdefault("v2_cursor_url", "")
     cfg.setdefault("v2_allow_large_deletes", False)
     cfg.setdefault("v2_scheduling_mode", "server_fsrs")
     if cfg.get("v2_scheduling_mode") not in ("server_fsrs", "local_anki"):
@@ -202,6 +207,19 @@ def save(cfg: dict[str, Any]) -> None:
     for key in _LEGACY_KEYS:
         global_cfg.pop(key, None)
     mw.addonManager.writeConfig(ADDON, global_cfg)
+
+
+def server_url_for_profile(profile: str) -> str:
+    """The KelmaSync server another (or this) profile is set up for."""
+    try:
+        path = Path(mw.pm.base) / profile / _ACCOUNT_CONFIG_FILENAME
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        url = str((raw.get("values") or {}).get("v2_url") or "").rstrip("/")
+    except (AttributeError, OSError, TypeError, ValueError):
+        url = ""
+    if not url or url in consts.LEGACY_V2_URLS:
+        return consts.DEFAULT_V2_URL
+    return url
 
 
 def migrate_account_config() -> None:

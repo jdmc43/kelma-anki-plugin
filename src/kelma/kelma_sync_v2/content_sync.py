@@ -389,8 +389,16 @@ def sync_content_once(
     current_scope = sorted(set(deck_names or ([deck_name] if deck_name else [])))
     previous_scope = snapshot.get("scope")
     snapshot_version = snapshot.get("version", 0)
+    # A snapshot from another server (the profile was switched) says nothing
+    # about this one: neither its deletions nor ours apply.
+    server = str(getattr(client, "endpoint", "") or "").rstrip("/")
+    if not sync_state.same_server(snapshot, server):
+        snapshot = sync_state.empty_state()
     scope_matches = (
-        isinstance(snapshot_version, int) and snapshot_version >= 2 and previous_scope == current_scope
+        isinstance(snapshot_version, int)
+        and snapshot_version >= 2
+        and previous_scope == current_scope
+        and sync_state.same_server(snapshot, server)
     )
     if scope_matches:
         manifest = dict(manifest)
@@ -399,7 +407,7 @@ def sync_content_once(
         manifest = dict(manifest)
         manifest["tombstones"] = []
         if progress and any(snapshot.get(key) for key in ("notes", "cards", "notetypes", "decks")):
-            progress("Deletes: routing scope changed (or old snapshot found); resetting deletion baseline without deleting data")
+            progress("Deletes: sync server or scope changed (or old snapshot found); resetting deletion baseline without deleting data")
 
     if progress:
         progress(
@@ -787,6 +795,7 @@ def sync_content_once(
         card_schedule_resets=card_schedule_resets,
         card_due_date_overrides=card_due_date_overrides,
         completed_at=final_server_manifest.get("server_time", ""),
+        server=server,
     )
     sync_state.save_state(col, new_state)
     if deck_names is None:

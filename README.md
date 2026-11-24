@@ -154,6 +154,24 @@ The add-on checks kelma.tech for updates and asks before installing one
 Open **Tools → Kelma → Accounts and collections…** to assign profiles, switch
 accounts, or open Anki's profile manager to add/remove profiles.
 
+## Using another KelmaSync server
+
+Every KelmaSync profile chooses its own server, so one profile can sync with
+Kelma and another with a server you or your school runs. Open **Sync → Sync
+server…** (or **Tools → Kelma → Sync server…**) in that profile, choose
+**Another KelmaSync server**, enter its address and click **Check**.
+
+- Accounts on a self-hosted server are created by whoever runs it; the add-on
+  only signs in. Kelma accounts are created at [kelma.tech](https://kelma.tech/signup).
+- Switching signs the profile out and forgets everything that described the old
+  server (its "changes since" checkpoint, cached manifest, last-sync snapshot
+  and deck-badge baseline). The collection stays on your computer; the next sync
+  uploads it to your account on the new server and merges it with anything
+  already there. Nothing is deleted on either server because of a switch.
+- The last-sync snapshot records its server, so a snapshot from one server can
+  never turn into deletions on another, even if the address is edited by hand.
+- **Accounts and collections…** lists each profile's server.
+
 ## Account model
 
 An Anki profile is the local boundary for an account:
