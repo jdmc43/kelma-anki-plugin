@@ -161,6 +161,8 @@ Kelma and another with a server you or your school runs. Open **Sync → Sync
 server…** (or **Tools → Kelma → Sync server…**) in that profile, choose
 **Another KelmaSync server**, enter its address and click **Check**.
 
+- Run your own with the open-source [KelmaSync server](https://github.com/jdmc43/kelma-sync)
+  (2.1.0 or later speaks the same protocol as Kelma's service).
 - Accounts on a self-hosted server are created by whoever runs it; the add-on
   only signs in. Kelma accounts are created at [kelma.tech](https://kelma.tech/signup).
 - Switching signs the profile out and forgets everything that described the old
