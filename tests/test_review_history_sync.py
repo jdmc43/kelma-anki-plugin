@@ -184,6 +184,22 @@ class ReviewHistorySyncTest(unittest.TestCase):
         self.assertEqual(col.decks.deck["usn"], 0)
         self.assertEqual(col.decks.deck["mod"], 123)
 
+    def test_anki_counters_are_never_published_as_study_days(self) -> None:
+        col = FakeCollection()
+        today = 5
+        col.decks.deck["newToday"] = [today, 18]
+        col.decks.deck["revToday"] = [today, 64]
+        checksum = review_checksum("g1", 0, 3, 10, 1, 2500, 4000, 1)
+        client = FakeClient({})
+        result = sync_reviews_once(
+            col,
+            client,
+            {"reviews": [{"review_id": 1001, "checksum": checksum}], "study_days": []},
+            clear_pending_usn=False,
+        )
+        self.assertEqual(result.study_days_pushed, 0)
+        self.assertFalse(any(p.get("study_days") for p in client.pushes))
+
     def test_orphan_source_id_never_attaches_to_an_unrelated_card(self) -> None:
         col = FakeCollection()
         remote = {
