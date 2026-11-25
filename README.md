@@ -262,6 +262,8 @@ synced. The add-on turns on Anki's "new cards ignore review limit",
 only" limits to what Kelma Review allots, so the deck list and the study screen
 show the same new/learn/due numbers. Those "today only" values stay local and
 are recomputed after every sync, when a profile opens and when the day changes.
+Anki's own "studied today" counters are never uploaded: they only count answers
+given in that Anki, and other apps count the day from the shared review history.
 
 **Syncing in the background.** Sync runs with Anki's spinning sync icon and a
 short note at the end; clicking Sync while it runs (or "Last sync details…"

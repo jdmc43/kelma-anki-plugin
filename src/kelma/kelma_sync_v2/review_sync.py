@@ -398,24 +398,16 @@ def sync_reviews_once(
     if accepted_ids:
         _clear_review_usns(col, accepted_ids)
 
-    # Daily limits use deck counters, not revlog rows. Publish their portable
-    # epoch-day form and merge the server's monotonic snapshots locally.
+    # Daily study snapshots ("study days") are read but never published.
+    # Anki's deck counters only count answers given in this Anki (and add
+    # subdeck answers to their parents), while other clients count today's
+    # work from the shared review history. Kelma Review treats a published
+    # snapshot as a deck's total for the day, so publishing Anki's counters
+    # hid reviews done on the website or other devices and made it serve
+    # cards past the daily limits. Snapshots from older clients are still
+    # merged into Anki's counters below; kelma_queue counts from the review
+    # history either way.
     local_days = local_study_days(col, deck_names=deck_names)
-    meaningful_days = [
-        record for record in local_days
-        if any(int(record.get(wire, 0) or 0) != 0 for _local, wire in _DAILY_FIELDS)
-    ]
-    for chunk in _chunks(meaningful_days, 1000):
-        response = client.batch_push({
-            "notes": [], "cards": [], "reviews": [], "study_days": chunk,
-            "notetypes": [], "decks": [],
-        })
-        accepted = int((response.get("accepted") or {}).get("study_days", 0) or 0)
-        if accepted != len(chunk):
-            raise RuntimeError(
-                f"server accepted {accepted}/{len(chunk)} daily study snapshots"
-            )
-        result.study_days_pushed += accepted
 
     combined: dict[tuple[int, str], dict[str, Any]] = {}
     for record in [*server_manifest.get("study_days", []), *local_days]:
